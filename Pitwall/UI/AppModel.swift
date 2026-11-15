@@ -11,6 +11,19 @@ struct Toast: Identifiable, Equatable {
     var tileID: String?
 }
 
+struct BoardActivity: Equatable {
+    var waiting = 0, failing = 0, done = 0, working = 0
+
+    var summary: String {
+        var p: [String] = []
+        if waiting > 0 { p.append("\(waiting) need\(waiting == 1 ? "s" : "") you") }
+        if failing > 0 { p.append("\(failing) failing") }
+        if done > 0 { p.append("\(done) finished") }
+        if working > 0 { p.append("\(working) working") }
+        return p.isEmpty ? "Nothing running" : p.joined(separator: " · ")
+    }
+}
+
 final class ZoomLevel: ObservableObject {
     @Published var value: CGFloat = 1
 }
@@ -85,6 +98,21 @@ final class AppModel: ObservableObject {
     }
 
     func attention(on b: Board) -> Int { b.tiles.filter { $0.state == .waiting }.count }
+
+    /// What's going on in a board, for its sidebar indicators.
+    func activity(on b: Board) -> BoardActivity {
+        var a = BoardActivity()
+        for t in b.tiles where t.kind != .subagent {
+            switch t.state {
+            case .waiting: a.waiting += 1
+            case .error: a.failing += 1
+            case .done: a.done += 1
+            case .working: a.working += 1
+            case .idle: break
+            }
+        }
+        return a
+    }
 
     func refreshAttention() {
         attentionCount = store.boards.flatMap(\.tiles).filter { $0.state == .waiting }.count

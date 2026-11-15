@@ -15,7 +15,7 @@ struct SidebarView: View {
             .frame(height: 18) // traffic lights live on the left
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(model.store.boards) { b in
-                    BoardRow(board: b, selected: b.id == model.store.currentBoardID, attention: model.attention(on: b)) {
+                    BoardRow(board: b, selected: b.id == model.store.currentBoardID, activity: model.activity(on: b)) {
                         model.controller?.switchBoard(b.id)
                     }
                     .contextMenu {
@@ -84,7 +84,7 @@ struct SidebarView: View {
 struct BoardRow: View {
     let board: Board
     let selected: Bool
-    let attention: Int
+    let activity: BoardActivity
     let action: () -> Void
 
     var body: some View {
@@ -97,20 +97,50 @@ struct BoardRow: View {
                 Text(board.name)
                     .fontWeight(selected ? .semibold : .regular)
                     .lineLimit(1)
-                Spacer()
-                if attention > 0 {
-                    Text("\(attention)")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(Color(red: 0.1, green: 0.07, blue: 0.02))
-                        .frame(minWidth: 18, minHeight: 18)
-                        .background(Circle().fill(Color(ns: Theme.amber)))
-                }
+                Spacer(minLength: 4)
+                indicators
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(selected ? Color.primary.opacity(0.07) : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help("\(board.name): \(activity.summary)")
+        .accessibilityLabel("\(board.name), \(activity.summary)")
+    }
+
+    /// Working (green dot), finished (blue), failing (red), needs you (amber).
+    @ViewBuilder private var indicators: some View {
+        HStack(spacing: 5) {
+            if activity.working > 0 && activity.waiting + activity.failing + activity.done == 0 {
+                Circle().fill(Color(ns: Theme.green)).frame(width: 7, height: 7)
+                    .overlay(Circle().stroke(Color(ns: Theme.green).opacity(0.3), lineWidth: 3))
+            }
+            if activity.done > 0 { tag(activity.done, symbol: "checkmark", Theme.blue) }
+            if activity.failing > 0 { tag(activity.failing, symbol: "exclamationmark", Theme.red) }
+            if activity.waiting > 0 { count(activity.waiting, Theme.amber, text: Color(red: 0.1, green: 0.07, blue: 0.02)) }
+        }
+    }
+
+    /// Softer, symbol-led chip for finished / failing.
+    private func tag(_ n: Int, symbol: String, _ c: NSColor) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: symbol).font(.system(size: 9, weight: .heavy))
+            Text("\(n)").font(.system(size: 11, weight: .bold).monospacedDigit())
+        }
+        .foregroundStyle(Color(ns: c))
+        .padding(.horizontal, 6)
+        .frame(minHeight: 18)
+        .background(Capsule().fill(Color(ns: c).opacity(0.16)))
+    }
+
+    private func count(_ n: Int, _ c: NSColor, text: Color) -> some View {
+        Text("\(n)")
+            .font(.system(size: 11, weight: .bold).monospacedDigit())
+            .foregroundStyle(text)
+            .padding(.horizontal, n > 9 ? 5 : 0)
+            .frame(minWidth: 18, minHeight: 18)
+            .background(Capsule().fill(Color(ns: c)))
     }
 }
 

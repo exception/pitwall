@@ -256,8 +256,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for (i, b) in Store.shared.boards.enumerated() {
             let item = MenuAction(b.name, key: i < 9 ? "\(i + 1)" : "") { ctl.switchBoard(b.id) }
             item.state = b.id == Store.shared.currentBoardID ? .on : .off
-            let n = b.tiles.filter { $0.state == .waiting }.count
-            if n > 0 { item.badge = NSMenuItemBadge(count: n) }
+            let a = main.model.activity(on: b)
+            if a.waiting > 0 { item.badge = NSMenuItemBadge(count: a.waiting) }
+            else if a.failing + a.done > 0 { item.badge = NSMenuItemBadge(string: a.summary) }
             item.image = Self.swatch(Theme.boardColors[b.colorIndex % Theme.boardColors.count])
             menu.addItem(item)
         }
