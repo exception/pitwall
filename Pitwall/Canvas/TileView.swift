@@ -292,15 +292,20 @@ final class TileView: NSView {
             galleryButton.layer?.backgroundColor = Theme.pill.cgColor
             metaRight = galleryButton.frame.minX - 8 * zoom
         }
-        metaField.frame = NSRect(x: metaRight - metaW, y: (h - 16 * zoom) / 2, width: metaW, height: 16 * zoom)
+        // Center each label on its real line height (a fixed box puts the text high).
+        func centered(_ f: NSTextField, x: CGFloat, w: CGFloat) -> NSRect {
+            let lh = ceil(f.intrinsicContentSize.height)
+            return NSRect(x: x, y: ((h - lh) / 2).rounded(), width: w, height: lh)
+        }
+        metaField.frame = centered(metaField, x: metaRight - metaW, w: metaW)
 
         let x0 = dot.frame.maxX + 10 * zoom
         let titleFont = titleField.font ?? .systemFont(ofSize: 14 * zoom, weight: .semibold)
         let natural = ceil((titleField.stringValue as NSString).size(withAttributes: [.font: titleFont]).width) + 4
         let titleW = min(natural, max(0, metaField.frame.minX - x0 - 8 * zoom))
-        titleField.frame = NSRect(x: x0, y: (h - 18 * zoom) / 2, width: titleW, height: 18 * zoom)
+        titleField.frame = centered(titleField, x: x0, w: titleW)
         let sx = titleField.frame.maxX + 8 * zoom
-        subtitleField.frame = NSRect(x: sx, y: (h - 15 * zoom) / 2 + zoom, width: max(0, metaField.frame.minX - sx - 8 * zoom), height: 15 * zoom)
+        subtitleField.frame = centered(subtitleField, x: sx, w: max(0, metaField.frame.minX - sx - 8 * zoom))
 
         content.frame = NSRect(x: 0, y: h, width: b.width, height: max(0, b.height - h))
         statusCard.frame = b
