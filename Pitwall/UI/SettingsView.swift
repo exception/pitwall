@@ -468,7 +468,7 @@ private struct TerminalPreview: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("erosemberg@mac pitwall % git status").font(font)
+            Text("you@mac pitwall % git status").font(font)
             Text("On branch main · nothing to commit").font(font).foregroundStyle(.secondary)
             (Text("● ").foregroundColor(Color(ns: Theme.green)) + Text("Update(slack.rs) ⎿ 18 additions")).font(font)
         }
