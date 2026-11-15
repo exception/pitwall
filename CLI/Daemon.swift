@@ -119,7 +119,10 @@ final class SessionDaemon {
 
     init() {
         PitwallPaths.ensure()
-        FileManager.default.createFile(atPath: PitwallPaths.daemonLog.path, contents: nil)
+        // Append across restarts (keep history after a crash); start fresh past 2 MB.
+        let logPath = PitwallPaths.daemonLog.path
+        let size = (try? FileManager.default.attributesOfItem(atPath: logPath)[.size] as? Int) ?? 0
+        if size == 0 || size > 2 << 20 { FileManager.default.createFile(atPath: logPath, contents: nil) }
         log = try? FileHandle(forWritingTo: PitwallPaths.daemonLog)
         log?.seekToEndOfFile()
     }
