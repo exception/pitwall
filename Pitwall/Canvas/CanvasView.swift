@@ -119,7 +119,8 @@ final class CanvasView: NSView {
         let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             let t = min(1, (CACurrentMediaTime() - t0) / duration)
-            let e = 1 - pow(1 - t, 3)
+            // Quick hops ease out; long camera moves ease in and out.
+            let e = duration > 0.6 ? (t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2) : 1 - pow(1 - t, 3)
             var v = Viewport()
             // Interpolate zoom geometrically for a natural feel.
             v.zoom = start.zoom * pow(target.zoom / start.zoom, e)

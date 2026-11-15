@@ -817,6 +817,11 @@ final class CanvasController: NSObject {
             if let m = args["message"] { Timelines.shared.add(tileID, .notification, m) }
         case "Stop":
             Timelines.shared.add(tileID, .done, args["last_assistant_message"].map { String($0.prefix(200)) } ?? "Finished its turn")
+            // It was fixing a watch's failure: run the watch again to check.
+            // (Not yet if a queued message, maybe that failure, is about to be delivered.)
+            if (store.inbox[tileID] ?? []).isEmpty, let w = fixRequests.removeValue(forKey: tileID), store.findTile(w) != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.rerunWatch(w) }
+            }
         default: break
         }
         switch event {
@@ -1208,6 +1213,8 @@ final class CanvasController: NSObject {
     /// Where the next new tile goes (set by "New agent here" and the canvas menu).
     /// Agent tiles whose agent process we've seen in the foreground.
     var agentSeen = Set<String>()
+    /// Agent → watch tile whose failure it was sent; rerun the watch when it finishes.
+    var fixRequests: [String: String] = [:]
     var pendingPlacement: (point: CGPoint?, frameID: String?, expires: Date)?
     private var scanInFlight = Set<String>()
 

@@ -25,7 +25,8 @@ pitwall — control Pitwall from the terminal
   pitwall tile focus <id>                   Fly the canvas to a tile
   pitwall tile move <id> <x> <y>            Move a tile (canvas points)
   pitwall tile key <id> <key>...            Press keys in a terminal (up, down, return, escape…)
-  pitwall view <x> <y> <zoom>               Move the canvas (world point at top-left)
+  pitwall view <x> <y> <zoom> [seconds]     Move the canvas (world point at top-left)
+  pitwall ui <action> [text]                Drive the interface (demos): dispatch, search, inbox, approve, close
   pitwall board new <name> [--root DIR] | board switch <name>
   pitwall frame new [--title T] [TILE...]   Put tiles in a new frame
   pitwall frame list | collapse <id> | expand <id>
@@ -267,9 +268,13 @@ case "watch", "server":
     a["command"] = cmd.joined(separator: " ")
     do { exit(Control.printResult(try Control.send(isServer ? "tile.server" : "tile.watch", args: a))) }
     catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
+case "ui":
+    guard let action = rest.first else { fputs("ui dispatch|search <text> | inbox | approve | close | sidebar show|hide | appearance light|dark|system\n", stderr); exit(2) }
+    do { exit(Control.printResult(try Control.send("ui", args: ["action": action, "text": rest.dropFirst().joined(separator: " ")]))) }
+    catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "view":
-    guard rest.count == 3 else { fputs("view <x> <y> <zoom>   (world point at the top-left, zoom 0.1–2)\n", stderr); exit(2) }
-    do { exit(Control.printResult(try Control.send("view", args: ["x": rest[0], "y": rest[1], "zoom": rest[2]]))) }
+    guard rest.count == 3 || rest.count == 4 else { fputs("view <x> <y> <zoom>   (world point at the top-left, zoom 0.1–2)\n", stderr); exit(2) }
+    do { exit(Control.printResult(try Control.send("view", args: ["x": rest[0], "y": rest[1], "zoom": rest[2], "duration": rest[safe: 3] ?? "0.32"]))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "board":
     guard let sub = rest.first, let name = rest[safe: 1] else { fputs("board new <name> [--root DIR] | board switch <name>\n", stderr); exit(2) }

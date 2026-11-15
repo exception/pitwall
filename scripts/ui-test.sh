@@ -138,8 +138,11 @@ scenario_watch() {
   # An idle agent with --auto-send gets the failure typed in.
   local A=$($H tile new --cwd $PWD --title "Agent"); sleep 1.5
   echo '{"last_assistant_message":"ready"}' | PITWALL_TILE_ID=$A $H hook Stop
-  local W=$(PITWALL_TILE_ID=$A $H watch --auto-send -- 'echo "FAIL src/login.test.ts"; exit 1'); sleep 4
+  rm -f $OUT/runs.txt
+  local W=$(PITWALL_TILE_ID=$A $H watch --auto-send -- "echo run >> $OUT/runs.txt; echo 'FAIL src/login.test.ts'; exit 1"); sleep 4
   check "failure sent to linked agent" '$H tile read $A --bytes 6000 | grep -q "is failing"'
+  echo '{"last_assistant_message":"fixed"}' | PITWALL_TILE_ID=$A $H hook Stop; sleep 4
+  check "watch reruns when the agent finishes" '[[ $(wc -l < $OUT/runs.txt) -ge 2 ]]'
   local P=$($H pr https://github.com/cli/cli/pull/15052 --cwd $PWD); sleep 8
   shot watch
   check "PR tile loaded from gh" '[[ $(tile_field $P name) == "#15052"* ]]'

@@ -132,11 +132,12 @@ extension CanvasController {
         let raw = t.sessionID.flatMap { Sessions.scrollback($0, bytes: 24_000) } ?? ""
         let tail = Sessions.plain(raw).split(separator: "\n", omittingEmptySubsequences: false).suffix(80).joined(separator: "\n")
         let cmd = t.watchCommand ?? t.command ?? "the command"
-        let text = "`\(cmd)` is failing in \(t.cwd ?? "the project"). Please fix it. Last output:\n```\n\(tail)\n```"
+        let text = "`\(cmd)` is failing in \(t.cwd ?? "the project"). Please fix it; Pitwall will run it again when you're done (no need to reply). Last output:\n```\n\(tail)\n```"
         if let err = sendMessage(from: id, to: agent, text: text) {
             model?.toast(.init(kind: .error, title: "Couldn't send", body: err, tileID: id))
         } else {
             Timelines.shared.add(agent, .message, "Failure from \(t.displayName)")
+            if t.watchCommand != nil, t.keepAlive != true { fixRequests[agent] = id }
         }
     }
 

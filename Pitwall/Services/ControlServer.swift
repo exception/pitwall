@@ -217,7 +217,42 @@ final class ControlServer {
 
         case "view":
             guard let x = Double(args["x"] ?? ""), let y = Double(args["y"] ?? ""), let z = Double(args["zoom"] ?? "") else { return fail("view <x> <y> <zoom>") }
-            ctl.canvas.animate(to: Viewport(origin: CGPoint(x: x, y: y), zoom: CGFloat(z)))
+            ctl.canvas.animate(to: Viewport(origin: CGPoint(x: x, y: y), zoom: CGFloat(z)), duration: Double(args["duration"] ?? "") ?? 0.32)
+            return ok()
+
+        case "ui":
+            // Drives the interface the way a person would (demos, video, tests).
+            guard let model = ctl.model else { return fail("no window") }
+            let text = args["text"] ?? ""
+            func type(_ set: @escaping (String) -> Void, then: (() -> Void)? = nil) {
+                let chars = Array(text)
+                for i in 0...chars.count {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.045 * Double(i)) {
+                        set(String(chars[0..<i]))
+                        if i == chars.count { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { then?() } }
+                    }
+                }
+            }
+            switch args["action"] ?? "" {
+            case "dispatch":
+                model.focusDispatch()
+                type({ model.dispatchText = $0 }, then: { model.dispatch() })
+            case "search":
+                model.searchOpen = true
+                model.search.query = ""
+                type({ model.search.query = $0 })
+            case "inbox": model.inboxOpen = true
+            case "approve":
+                guard let p = ApprovalCenter.shared.pending.first else { return fail("nothing to approve") }
+                ApprovalCenter.shared.decide(p.id, .allow)
+            case "close":
+                model.inboxOpen = false
+                model.searchOpen = false
+                model.pickerPoint = nil
+            case "sidebar": model.sidebarVisible = text != "hide"
+            case "appearance": Prefs.shared.appearance = text
+            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance")
+            }
             return ok()
 
         case "board.new":
