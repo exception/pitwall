@@ -83,6 +83,8 @@ final class CanvasController: NSObject {
     }
 
     func layoutAll(live: Bool) {
+        DevStats.layoutPasses += 1
+        if live { DevStats.liveLayoutPasses += 1 }
         let z = canvas.viewport.zoom
         let visible = canvas.bounds.insetBy(dx: -200, dy: -200)
         // Mid-animation, ride the frame's implicit transaction: an explicit
@@ -805,6 +807,8 @@ final class CanvasController: NSObject {
         screenWaiting.remove(tileID)
         let event = args["event"] ?? ""
         let tool = args["tool_name"] ?? ""
+        DevStats.hookEvents += 1
+        DevStats.lastHook = (event, Date())
         // Any progress means a pending permission was answered in the terminal.
         if ["PostToolUse", "UserPromptSubmit", "Stop", "SessionEnd"].contains(event) {
             ApprovalCenter.shared.passThrough(tileID: tileID)
@@ -1168,7 +1172,10 @@ final class CanvasController: NSObject {
     }
 
     private func poll() {
+        let pollStart = CACurrentMediaTime()
+        defer { DevStats.pollMillis = (CACurrentMediaTime() - pollStart) * 1000 }
         let infos = Sessions.list()
+        DevStats.daemonSessions = infos.count
         var byID: [String: SessionInfo] = [:]
         for i in infos { byID[i.id] = i }
         for b in store.boards {
@@ -1291,12 +1298,13 @@ final class CanvasController: NSObject {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let branch = Git.branch(dir)
             let stat = branch == nil ? nil : Git.diffStat(dir)
+            let linked = branch == nil ? nil : Git.linkedWorktree(dir)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.gitInFlight.remove(id)
                 guard let cur = self.store.findTile(id)?.tile else { return }
-                if cur.branch != branch || cur.diffAdded != stat?.0 || cur.diffRemoved != stat?.1 {
-                    self.store.updateTile(id) { $0.branch = branch; $0.diffAdded = stat?.0; $0.diffRemoved = stat?.1 }
+                if cur.branch != branch || cur.diffAdded != stat?.0 || cur.diffRemoved != stat?.1 || cur.detectedWorktree != linked {
+                    self.store.updateTile(id) { $0.branch = branch; $0.diffAdded = stat?.0; $0.diffRemoved = stat?.1; $0.detectedWorktree = linked }
                     self.reconcileIfCurrent(id)
                 }
             }

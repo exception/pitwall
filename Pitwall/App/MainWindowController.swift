@@ -17,6 +17,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var scrollLatch = ScrollLatch<NSView>()
     private var trailingHost: NSView?
     private var dispatchHost: NSView?
+    private var devHost: NSView?
+    let devStats = DevStats()
     private var sidebarLeading: NSLayoutConstraint!
     private var dispatchCenter: NSLayoutConstraint!
     private var bag = Set<AnyCancellable>()
@@ -30,11 +32,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.title = "Pitwall"
         window.isMovableByWindowBackground = false
         window.minSize = NSSize(width: 760, height: 520)
-        if UserDefaults.pitwall === UserDefaults.standard { window.setFrameAutosaveName("PitwallMain") }
         window.tabbingMode = .disallowed
+        // Restore the saved frame if there is one and it's still on a screen;
+        // otherwise center. (AppKit nudges a (0,0) window up past the Dock, so
+        // checking for a zero origin never caught the first launch.)
+        let autosave = UserDefaults.pitwall === UserDefaults.standard
+        let restored = autosave && window.setFrameUsingName("PitwallMain")
+            && NSScreen.screens.contains { $0.visibleFrame.intersects(window.frame) }
+        if !restored { window.center() }
+        if autosave { window.setFrameAutosaveName("PitwallMain") }
         super.init(window: window)
         window.delegate = self
-        if window.frame.origin == .zero { window.center() }
 
         controller = CanvasController(canvas: canvas)
         controller.model = model
@@ -53,6 +61,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.controller.reconcile()
                 self.controller.refreshTileChrome()
             }
+        }.store(in: &bag)
+        devStats.controller = controller
+        Prefs.shared.$devMode.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] on in
+            self?.setDevMode(on)
         }.store(in: &bag)
         model.$sidebarVisible.dropFirst().sink { [weak self] v in
             self?.setSidebar(visible: v)
@@ -167,6 +179,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             dispatch.leadingAnchor.constraint(greaterThanOrEqualTo: sidebar.trailingAnchor, constant: 16).withPriority(.defaultHigh),
             dispatch.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
         ])
+    }
+
+    private func setDevMode(_ on: Bool) {
+        guard let content = window?.contentView else { return }
+        devHost?.removeFromSuperview()
+        devHost = nil
+        devStats.stop()
+        guard on else { return }
+        let h = host(DevHUD(stats: devStats))
+        content.addSubview(h)
+        NSLayoutConstraint.activate([
+            h.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            h.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+        ])
+        // Nudge the dispatch bar left rather than sit under the HUD.
+        if let d = dispatchHost {
+            d.trailingAnchor.constraint(lessThanOrEqualTo: h.leadingAnchor, constant: -12).withPriority(.init(760)).isActive = true
+        }
+        devHost = h
+        devStats.start(on: canvas)
     }
 
     private func host<V: View>(_ view: V) -> NSHostingView<V> {

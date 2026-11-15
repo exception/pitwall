@@ -197,6 +197,16 @@ final class CanvasView: NSView {
         window?.makeFirstResponder(self)
         controller?.clearFocus()
         let p = convert(event.locationInWindow, from: nil)
+        if event.clickCount == 2, let w = window, p.y < w.frame.height - w.contentLayoutRect.height {
+            // The canvas runs under the transparent title bar, so behave like
+            // one: double-click zooms (or minimizes) per System Settings.
+            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") ?? "Maximize" {
+            case "Minimize": w.performMiniaturize(nil)
+            case "None", "Do Nothing": break
+            default: w.performZoom(nil)
+            }
+            return
+        }
         if event.clickCount == 2 {
             controller?.showPicker(at: p)
             return

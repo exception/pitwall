@@ -27,6 +27,17 @@ enum Git {
         run(["rev-parse", "--show-toplevel"], in: dir)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// The top of the linked worktree `dir` is in, or nil when `dir` is in a
+    /// main checkout (or not in a repo at all).
+    static func linkedWorktree(_ dir: String) -> String? {
+        guard let out = run(["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"], in: dir) else { return nil }
+        let l = out.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
+        guard l.count == 3 else { return nil }
+        let gitDir = URL(fileURLWithPath: l[1]).standardizedFileURL.path
+        let common = URL(fileURLWithPath: l[2]).standardizedFileURL.path
+        return gitDir == common ? nil : l[0]
+    }
+
     static func branch(_ dir: String) -> String? {
         guard let b = run(["rev-parse", "--abbrev-ref", "HEAD"], in: dir)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !b.isEmpty else { return nil }

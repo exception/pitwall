@@ -105,6 +105,9 @@ final class TileView: NSView {
         fullButton.action = #selector(fullClicked)
         galleryButton.isBordered = false
         galleryButton.imagePosition = .imageLeading
+        // Keep icon and count together, centered in the pill (otherwise the
+        // icon pins to the left edge and the count floats to the right).
+        galleryButton.imageHugsTitle = true
         galleryButton.target = self
         galleryButton.action = #selector(galleryClicked)
         galleryButton.wantsLayer = true
@@ -309,7 +312,7 @@ final class TileView: NSView {
                 .withSymbolConfiguration(.init(pointSize: 11 * zoom, weight: .medium))
             galleryButton.contentTintColor = Theme.text2
             }
-            let gw = (36 + CGFloat(String(count).count) * 7) * zoom
+            let gw = (32 + CGFloat(String(count).count) * 7) * zoom
             galleryButton.frame = NSRect(x: metaRight - gw, y: (h - 22 * zoom) / 2, width: gw, height: 22 * zoom)
             galleryButton.layer?.cornerRadius = 11 * zoom
             galleryButton.layer?.backgroundColor = Theme.pill.cgColor
@@ -425,7 +428,10 @@ final class TileView: NSView {
         dragStart = event.locationInWindow
         frameAtStart = tile.frame
         if event.clickCount == 2, case .move = dragZone, !showsCard {
-            canvas?.controller?.renameTile(tile.id)
+            // On the name: rename. Anywhere else on the header: full screen,
+            // like double-clicking a window's title bar.
+            let onName = titleField.convert(titleField.bounds, to: self).insetBy(dx: -4, dy: -4).contains(p)
+            if onName { canvas?.controller?.renameTile(tile.id) } else { canvas?.controller?.toggleFullScreen(tile.id) }
             return
         }
         if case .link = dragZone { canvas?.beginLinkDrag(from: tile.id, event: event) }

@@ -148,30 +148,66 @@ struct TileRow: View {
     let tile: Tile
     let focused: Bool
     let action: () -> Void
+    @State private var hover = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Circle().fill(Color(ns: Theme.color(for: tile.state))).frame(width: 8, height: 8)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(tile.displayName).lineLimit(1)
-                    if tile.state == .waiting, let m = tile.statusMessage {
-                        Text(m).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+        HStack(spacing: 4) {
+            Button(action: action) {
+                HStack(spacing: 10) {
+                    Circle().fill(Color(ns: Theme.color(for: tile.state))).frame(width: 8, height: 8)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(tile.displayName).lineLimit(1)
+                        if tile.state == .waiting, let m = tile.statusMessage {
+                            Text(m).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                        } else if tile.worktreePath != nil {
+                            Label(tile.branch ?? "worktree", systemImage: "arrow.triangle.branch")
+                                .labelStyle(.titleAndIcon)
+                                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                    if tile.state != .idle {
+                        Text(tile.stateSince.elapsedShort)
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(.secondary)
                     }
                 }
-                Spacer(minLength: 4)
-                if tile.state != .idle {
-                    Text(tile.stateSince.elapsedShort)
-                        .font(.system(size: 11).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(tile.state == .waiting ? Color(ns: Theme.amber).opacity(0.14) : (focused ? Color.primary.opacity(0.06) : .clear)))
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            if let wt = tile.worktreePath {
+                WorktreeButton(path: wt, visible: hover || focused)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(tile.state == .waiting ? Color(ns: Theme.amber).opacity(0.14) : (focused ? Color.primary.opacity(0.06) : .clear)))
+        .onHover { hover = $0 }
+    }
+}
+
+/// Opens a tile's worktree in Finder.
+struct WorktreeButton: View {
+    let path: String
+    let visible: Bool
+    @State private var hover = false
+
+    var body: some View {
+        Button {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+        } label: {
+            Image(systemName: "folder")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(hover ? .primary : .secondary)
+                .frame(width: 22, height: 20)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(hover ? 0.1 : 0)))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .opacity(visible || hover ? 1 : 0.45)
+        .onHover { hover = $0 }
+        .help("Open worktree in Finder\n" + (path as NSString).abbreviatingWithTildeInPath)
+        .accessibilityLabel("Open worktree in Finder")
     }
 }
 

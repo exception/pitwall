@@ -204,6 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .separator(),
             key(MenuAction("Toggle Sidebar", key: "s") { model.sidebarVisible.toggle() }, [.command, .control]),
             appearanceItem,
+            .separator(),
+            key(MenuAction("Dev Mode", key: "d") { Prefs.shared.devMode.toggle() }, [.command, .option]),
         ])
 
         // Go is rebuilt from the real boards every time it opens.

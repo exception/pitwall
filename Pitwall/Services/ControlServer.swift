@@ -283,7 +283,8 @@ final class ControlServer {
                 model.pickerPoint = nil
             case "sidebar": model.sidebarVisible = text != "hide"
             case "appearance": Prefs.shared.appearance = text
-            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance")
+            case "devmode": Prefs.shared.devMode = text != "off"
+            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode")
             }
             return ok()
 

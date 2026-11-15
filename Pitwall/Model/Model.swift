@@ -60,6 +60,9 @@ struct Tile: Codable, Identifiable, Equatable {
     var task: String?
     var branch: String?
     var worktree: String?
+    /// Linked git worktree the tile's current directory is in, found by
+    /// polling (covers agents started by hand inside a worktree).
+    var detectedWorktree: String?
     var diffAdded: Int?
     var diffRemoved: Int?
     var terminalTitle: String?
@@ -92,6 +95,9 @@ struct Tile: Codable, Identifiable, Equatable {
             return cwd.map { ($0 as NSString).lastPathComponent } ?? "Terminal"
         }
     }
+
+    /// The git worktree this tile works in, if any.
+    var worktreePath: String? { worktree ?? detectedWorktree }
 
     var isTerminalBacked: Bool { kind == .terminal || kind == .agent || kind == .logs }
 }

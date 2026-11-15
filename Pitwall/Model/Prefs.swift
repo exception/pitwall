@@ -30,6 +30,8 @@ final class Prefs: ObservableObject {
     @Published var showSubagents: Bool { didSet { d.set(showSubagents, forKey: "showSubagents") } }
     /// Show what agents have spent ($) on tiles and the board pill.
     @Published var showCost: Bool { didSet { d.set(showCost, forKey: "showCost") } }
+    /// Developer HUD (fps, memory, counters) in the bottom-right corner.
+    @Published var devMode: Bool { didSet { d.set(devMode, forKey: "devMode") } }
 
     // MARK: Notifications
     @Published var toasts: Bool { didSet { d.set(toasts, forKey: "toasts") } }
@@ -72,6 +74,7 @@ final class Prefs: ObservableObject {
         cardZoom = d.object(forKey: "cardZoom") as? Double ?? 0.5
         showSubagents = b("showSubagents", true)
         showCost = b("showCost", true)
+        devMode = b("devMode", false) || ProcessInfo.processInfo.environment["PITWALL_DEV"] == "1"
         toasts = b("toasts", true)
         systemNotifications = b("systemNotifications", true)
         dockBadge = b("dockBadge", true)

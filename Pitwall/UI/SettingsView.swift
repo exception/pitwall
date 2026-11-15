@@ -191,6 +191,9 @@ struct SettingsView: View {
                     CardThresholdPreview(threshold: prefs.cardZoom)
                 }
             }
+            Card {
+                Row("Dev Mode", "A corner HUD with frame rate, memory, CPU and canvas/agent counters. ⌥⌘D") { Toggle("", isOn: $prefs.devMode).labelsHidden().toggleStyle(.switch) }
+            }
         }
     }
 
