@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- monochrome glyph for menu bar / small sizes; currentColor-friendly -->
+  <g fill="currentColor">
+    <rect x="6" y="8" width="24" height="18" rx="4" opacity="0.35"/>
+    <rect x="34" y="8" width="24" height="18" rx="4"/>
+    <rect x="6" y="30" width="24" height="18" rx="4" opacity="0.35"/>
+    <rect x="34" y="30" width="24" height="18" rx="4" opacity="0.35"/>
+    <rect x="4" y="52" width="56" height="6" rx="3"/>
+  </g>
+</svg>

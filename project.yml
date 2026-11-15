@@ -1,0 +1,148 @@
+name: Pitwall
+options:
+  bundleIdPrefix: dev.pitwall
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ENABLE_HARDENED_RUNTIME: YES
+    DEAD_CODE_STRIPPING: YES
+    # Signing is ad-hoc until we set up a Developer ID (gated on explicit go-ahead).
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  Pitwall:
+    type: application
+    platform: macOS
+    sources:
+      - path: Pitwall
+      - path: Shared
+      - path: Resources/Assets.xcassets
+      - path: Resources/Themes
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: pitwall-cli
+        embed: false
+      - framework: vendor/ghostty/macos/GhosttyKit.xcframework
+        embed: false
+      - sdk: Carbon.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: IOSurface.framework
+      - sdk: CoreText.framework
+      - sdk: UserNotifications.framework
+      - sdk: WebKit.framework
+      - sdk: ServiceManagement.framework
+      - sdk: QuickLookThumbnailing.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.pitwall.app
+        PRODUCT_NAME: Pitwall
+        DEFINES_MODULE: YES
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/Pitwall.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        OTHER_LDFLAGS: ["-lc++"]
+        LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../Frameworks"]
+    postBuildScripts:
+      - name: Embed helper + Ghostty resources
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          APP="$TARGET_BUILD_DIR/$WRAPPER_NAME"
+          mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Resources"
+          # Replace atomically: a running session daemon keeps its own inode.
+          # Overwriting in place would invalidate its code signature and kill it.
+          cp -f "$BUILT_PRODUCTS_DIR/pitwall" "$APP/Contents/Helpers/.pitwall.new"
+          codesign --force --sign - --options runtime "$APP/Contents/Helpers/.pitwall.new"
+          mv -f "$APP/Contents/Helpers/.pitwall.new" "$APP/Contents/Helpers/pitwall"
+          SHARE="$PROJECT_DIR/vendor/ghostty/zig-out/share"
+          rsync -a --delete "$SHARE/ghostty/" "$APP/Contents/Resources/ghostty/"
+          rsync -a --delete "$SHARE/terminfo/" "$APP/Contents/Resources/terminfo/"
+          # macOS's system ncurses looks up entries by letter (x/), newer
+          # ncurses by hex (78/): provide both like Ghostty.app does.
+          (cd "$APP/Contents/Resources/terminfo" && for d in */; do d="${d%/}"; case "$d" in [0-9a-f][0-9a-f]) l=$(printf "\\x$d"); [ -e "$l" ] || ln -s "$d" "$l";; esac; done)
+
+  pitwall-cli:
+    type: tool
+    platform: macOS
+    sources:
+      - path: CLI
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_NAME: pitwall
+        PRODUCT_BUNDLE_IDENTIFIER: dev.pitwall.cli
+        SWIFT_OBJC_BRIDGING_HEADER: CLI/pty/pitwall-cli-Bridging-Header.h
+        SKIP_INSTALL: YES
+        HEADER_SEARCH_PATHS: ["$(PROJECT_DIR)/vendor/ghostty-vt-out/include"]
+        OTHER_LDFLAGS: ["$(PROJECT_DIR)/vendor/ghostty-vt-out/lib/libghostty-vt.a", "-lc++"]
+
+  PitwallRemote:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: iOS
+        excludes: ["Resources/Info.plist"]
+      - path: Shared/RemoteProtocol.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.pitwall.remote
+        PRODUCT_NAME: PitwallRemote
+        INFOPLIST_FILE: iOS/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_OBJC_BRIDGING_HEADER: iOS/Terminal/PitwallRemote-Bridging-Header.h
+        HEADER_SEARCH_PATHS: ["$(PROJECT_DIR)/vendor/ghostty-vt-ios/include"]
+        "OTHER_LDFLAGS[sdk=iphoneos*]": ["$(PROJECT_DIR)/vendor/ghostty-vt-ios/lib/libghostty-vt.a", "-lc++"]
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]": ["$(PROJECT_DIR)/vendor/ghostty-vt-iossim/lib/libghostty-vt.a", "-lc++"]
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+
+  PitwallTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Pitwall
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_ENABLE_EXPLICIT_MODULES: NO
+        SWIFT_INCLUDE_PATHS: ["$(OBJROOT)/Pitwall.build/$(CONFIGURATION)/Pitwall.build/Objects-normal/$(CURRENT_ARCH)"]
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Pitwall.app/Contents/MacOS/Pitwall"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  PitwallRemote:
+    build:
+      targets:
+        PitwallRemote: all
+    run:
+      config: Debug
+  Pitwall:
+    build:
+      targets:
+        Pitwall: all
+        pitwall-cli: all
+    run:
+      config: Debug
+    test:
+      targets:
+        - PitwallTests

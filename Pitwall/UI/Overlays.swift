@@ -1,0 +1,553 @@
+import SwiftUI
+import AppKit
+
+// MARK: - Sidebar
+
+struct SidebarView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Spacer()
+                SidebarToggle(model: model)
+            }
+            .frame(height: 18) // traffic lights live on the left
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(model.store.boards) { b in
+                    BoardRow(board: b, selected: b.id == model.store.currentBoardID, attention: model.attention(on: b)) {
+                        model.controller?.switchBoard(b.id)
+                    }
+                    .contextMenu {
+                        Button("Rename…") { renameBoard(b) }
+                        if model.store.boards.count > 1 {
+                            Button("Remove board") { model.store.removeBoard(b.id); model.controller?.reconcile() }
+                        }
+                    }
+                }
+                Button(action: model.addBoard) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus").frame(width: 22, height: 22)
+                        Text("Add board…")
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Add a board for a project folder (⇧⌘O)")
+            }
+            Divider().padding(.horizontal, 8)
+            Text("On this board")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(model.sortedTiles) { t in
+                        TileRow(tile: t, focused: model.focusedTileID == t.id) {
+                            model.controller?.flyTo(tileID: t.id, fill: false)
+                        }
+                    }
+                    if model.sortedTiles.isEmpty {
+                        Text("Double-click the canvas or type a task below to start.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .padding(10)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 12)
+        .frame(width: 256)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .pitwallGlass(cornerRadius: 22)
+    }
+
+    private func renameBoard(_ b: Board) {
+        let alert = NSAlert()
+        alert.messageText = "Rename board"
+        let field = NSTextField(string: b.name)
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty {
+            model.store.update(b.id) { $0.name = field.stringValue }
+        }
+    }
+}
+
+struct BoardRow: View {
+    let board: Board
+    let selected: Bool
+    let attention: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color(ns: Theme.boardColors[board.colorIndex % Theme.boardColors.count]))
+                    .frame(width: 22, height: 22)
+                    .overlay(Text(board.name.prefix(1).uppercased()).font(.system(size: 11, weight: .bold)).foregroundStyle(.white))
+                Text(board.name)
+                    .fontWeight(selected ? .semibold : .regular)
+                    .lineLimit(1)
+                Spacer()
+                if attention > 0 {
+                    Text("\(attention)")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color(red: 0.1, green: 0.07, blue: 0.02))
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(Circle().fill(Color(ns: Theme.amber)))
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(selected ? Color.primary.opacity(0.07) : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct TileRow: View {
+    let tile: Tile
+    let focused: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Circle().fill(Color(ns: Theme.color(for: tile.state))).frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(tile.displayName).lineLimit(1)
+                    if tile.state == .waiting, let m = tile.statusMessage {
+                        Text(m).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                if tile.state != .idle {
+                    Text(tile.stateSince.elapsedShort)
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(tile.state == .waiting ? Color(ns: Theme.amber).opacity(0.14) : (focused ? Color.primary.opacity(0.06) : .clear)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct SidebarToggle: View {
+    @ObservedObject var model: AppModel
+    @State private var hover = false
+    var body: some View {
+        Button { model.sidebarVisible.toggle() } label: {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(hover ? .primary : .secondary)
+                .frame(width: 28, height: 24)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(hover ? 0.08 : 0)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(model.sidebarVisible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
+        .accessibilityLabel(model.sidebarVisible ? "Hide sidebar" : "Show sidebar")
+    }
+}
+
+// MARK: - Toolbar
+
+struct ToolbarPill: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if !model.sidebarVisible {
+                SidebarToggle(model: model)
+                Divider().frame(height: 16)
+            }
+            Text(model.board.name).fontWeight(.semibold)
+            let agents = model.board.tiles.filter { $0.kind == .agent }.count
+            if agents > 0 { Text("· \(agents) agent\(agents == 1 ? "" : "s")").foregroundStyle(.secondary) }
+            if model.boardCost >= 0.01 { Text("· " + String(format: "$%.2f", model.boardCost)).foregroundStyle(.secondary).monospacedDigit() }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 40)
+        .pitwallGlass(cornerRadius: 20)
+    }
+}
+
+struct TrailingControls: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if model.attentionCount > 0 {
+                Button { model.inboxOpen.toggle() } label: {
+                    HStack(spacing: 8) {
+                        Circle().fill(Color(ns: Theme.amber)).frame(width: 7, height: 7)
+                        Text("\(model.attentionCount) need\(model.attentionCount == 1 ? "s" : "") you").fontWeight(.semibold)
+                        Text("⌘J").font(.system(size: 11, design: .monospaced)).opacity(0.7)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 40)
+                    .foregroundStyle(Color(ns: Theme.amberText))
+                    .pitwallGlass(cornerRadius: 20)
+                }
+                .buttonStyle(.plain)
+                .help("Open the Inbox (⌘I) · ⌘J jumps to the next agent")
+            }
+            Button { model.controller?.zoomToFit() } label: {
+                Text("\(Int((model.zoom * 100).rounded()))%")
+                    .font(.system(size: 12).monospacedDigit())
+                    .frame(width: 54, height: 40)
+                    .pitwallGlass(cornerRadius: 20)
+            }
+            .buttonStyle(.plain)
+            .help("Zoom to fit (⌘0 for 100%)")
+        }
+    }
+}
+
+// MARK: - Dispatch bar
+
+struct DispatchBar: View {
+    @ObservedObject var model: AppModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField(placeholder, text: $model.dispatchText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 15))
+                .lineLimit(1...6)
+                .focused($focused)
+                .onSubmit { model.dispatch() }
+                .padding(.top, 4)
+            HStack(spacing: 6) {
+                ChipPicker(symbol: "folder", title: repoLabel, options: repoOptions, selected: model.dispatchRepo ?? model.board.root ?? "") { v in
+                    if v == "__choose__" { model.chooseFile(directories: true) { model.dispatchRepo = $0.path } }
+                    else { model.dispatchRepo = v == model.board.root ? nil : v }
+                }
+                if model.dispatchAgent != .shell {
+                    ChipPicker(symbol: "arrow.triangle.branch", title: model.dispatchWorktree ? "New worktree" : "Current branch",
+                               options: [
+                                .init(value: "worktree", symbol: "arrow.triangle.branch", title: "New worktree",
+                                      subtitle: "Its own branch in .worktrees/ — parallel agents never collide"),
+                                .init(value: "current", symbol: "point.topleft.down.to.point.bottomright.curvepath", title: "Current branch",
+                                      subtitle: "Works directly in the folder's checked-out branch"),
+                               ],
+                               selected: model.dispatchWorktree ? "worktree" : "current") { model.dispatchWorktree = $0 == "worktree" }
+                }
+                ChipPicker(symbol: model.dispatchAgent == .shell ? "terminal" : "sparkle", title: model.dispatchAgent.title,
+                           options: [
+                            .init(value: AgentKind.claude.rawValue, symbol: "sparkle", title: "Claude Code",
+                                  subtitle: "Live status, sub-agents and canvas tools"),
+                            .init(value: AgentKind.codex.rawValue, symbol: "chevron.left.forwardslash.chevron.right", title: "Codex",
+                                  subtitle: "OpenAI Codex CLI"),
+                            .init(value: AgentKind.shell.rawValue, symbol: "terminal", title: "Shell command",
+                                  subtitle: "Run any command in a new terminal"),
+                           ],
+                           selected: model.dispatchAgent.rawValue) { model.dispatchAgent = AgentKind(rawValue: $0) ?? .claude }
+                Spacer()
+                Button(action: model.dispatch) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color(nsColor: .windowBackgroundColor))
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(Color.primary))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Start (⌘↩)")
+                .accessibilityLabel("Start agent")
+            }
+        }
+        .padding(.leading, 18).padding(.trailing, 10).padding(.vertical, 10)
+        .frame(width: 640)
+        .pitwallGlass(cornerRadius: 26)
+        .onChange(of: model.dispatchFocusToken) { _ in focused = true }
+    }
+
+    private var placeholder: String {
+        model.dispatchAgent == .shell ? "Command to run…" : "What should a new agent work on?"
+    }
+
+    private var repoOptions: [ChipPicker.Option] {
+        var seen = Set<String>()
+        var out: [ChipPicker.Option] = []
+        let paths = ([model.board.root] + model.store.boards.map(\.root)).compactMap { $0 }
+        for p in paths where !seen.contains(p) {
+            seen.insert(p)
+            out.append(.init(value: p, symbol: "folder", title: (p as NSString).lastPathComponent,
+                             subtitle: (p as NSString).abbreviatingWithTildeInPath))
+        }
+        out.append(.init(value: "__choose__", symbol: "folder.badge.plus", title: "Choose folder…", subtitle: nil))
+        return out
+    }
+
+    private var repoLabel: String {
+        let p = model.dispatchRepo ?? model.board.root ?? NSHomeDirectory()
+        return (p as NSString).lastPathComponent
+    }
+}
+
+/// A pill that opens a glass popover of rich options.
+struct ChipPicker: View {
+    struct Option: Identifiable {
+        var value: String
+        var symbol: String
+        var title: String
+        var subtitle: String?
+        var id: String { value }
+    }
+    let symbol: String
+    let title: String
+    let options: [Option]
+    let selected: String
+    let onSelect: (String) -> Void
+    @State private var open = false
+    @State private var hovered: String?
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: 5) {
+                Chip(text: title, symbol: symbol, trailingChevron: true, active: open)
+            }
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(options) { o in
+                    Button {
+                        open = false
+                        onSelect(o.value)
+                    } label: {
+                        HStack(alignment: .center, spacing: 10) {
+                            Image(systemName: o.symbol)
+                                .font(.system(size: 13, weight: .medium))
+                                .frame(width: 28, height: 28)
+                                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.07)))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(o.title).font(.system(size: 13, weight: .medium))
+                                if let sub = o.subtitle {
+                                    Text(sub).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 12)
+                            if o.value == selected {
+                                Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
+                            }
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(hovered == o.value ? Color.primary.opacity(0.07) : .clear))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovered = $0 ? o.value : (hovered == o.value ? nil : hovered) }
+                }
+            }
+            .padding(6)
+            .frame(minWidth: 280)
+        }
+    }
+}
+
+struct Chip: View {
+    let text: String
+    let symbol: String
+    var trailingChevron = false
+    var active = false
+    @State private var hover = false
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol).font(.system(size: 11, weight: .medium))
+            Text(text).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            if trailingChevron {
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).opacity(0.55)
+            }
+        }
+        .padding(.horizontal, 12).frame(height: 30)
+        .background(Capsule().fill(Color.primary.opacity(active ? 0.14 : (hover ? 0.11 : 0.07))))
+        .contentShape(Capsule())
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.12), value: hover)
+    }
+}
+
+// MARK: - Toasts
+
+struct ToastStack: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 10) {
+            ForEach(model.toasts) { t in ToastView(toast: t, model: model) }
+        }
+        .frame(width: 310, alignment: .topTrailing)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: model.toasts)
+    }
+}
+
+struct ToastView: View {
+    let toast: Toast
+    @ObservedObject var model: AppModel
+
+    var isPermission: Bool {
+        if let id = toast.tileID, ApprovalCenter.shared.pending(for: id) != nil { return true }
+        return toast.body.localizedCaseInsensitiveContains("permission")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Circle().fill(color).frame(width: 9, height: 9)
+                Text(toast.title).fontWeight(.semibold).lineLimit(1)
+                Spacer()
+                Button { model.dismiss(toast) } label: { Image(systemName: "xmark").font(.system(size: 10, weight: .bold)) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Dismiss")
+            }
+            Text(toast.body).foregroundStyle(.secondary).lineLimit(3)
+            if toast.tileID != nil {
+                HStack(spacing: 6) {
+                    if isPermission {
+                        ToastButton(title: "Approve", primary: true, accent: true) { model.answer(toast, allow: true) }
+                        ToastButton(title: "Deny", primary: false) { model.answer(toast, allow: false) }
+                    }
+                    ToastButton(title: "Go to", primary: !isPermission, accent: !isPermission && toast.kind == .attention) { model.goTo(toast) }
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 300)
+        .pitwallGlass(cornerRadius: 18)
+        .transition(.move(edge: .trailing).combined(with: .opacity))
+    }
+
+    private var color: Color {
+        switch toast.kind {
+        case .attention: return Color(ns: Theme.amber)
+        case .error: return Color(ns: Theme.red)
+        case .info: return Color(ns: Theme.blue)
+        }
+    }
+}
+
+struct ToastButton: View {
+    let title: String
+    let primary: Bool
+    var accent = false
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: primary ? .semibold : .medium))
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .foregroundStyle(accent ? Color(red: 0.10, green: 0.07, blue: 0.02) : (primary ? Color(nsColor: .windowBackgroundColor) : Color.primary))
+                .background(Capsule().fill(accent ? Color(ns: Theme.amber) : (primary ? Color.primary : Color.primary.opacity(0.08))))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - New tile picker
+
+struct PickerView: View {
+    @ObservedObject var model: AppModel
+    @State private var query = ""
+    @FocusState private var focused: Bool
+
+    struct Item: Identifiable {
+        let kind: TileKind
+        let name: String
+        let glyph: String
+        let key: String
+        var id: String { name }
+    }
+
+    let items: [Item] = [
+        .init(kind: .agent, name: "Agent", glyph: "sparkle", key: "a"),
+        .init(kind: .terminal, name: "Terminal", glyph: "terminal", key: "t"),
+        .init(kind: .browser, name: "Browser", glyph: "globe", key: "b"),
+        .init(kind: .note, name: "Note", glyph: "text.alignleft", key: "n"),
+        .init(kind: .code, name: "File", glyph: "curlybraces", key: "f"),
+        .init(kind: .diff, name: "Diff", glyph: "plusminus", key: "d"),
+        .init(kind: .logs, name: "Logs", glyph: "list.bullet.rectangle", key: "l"),
+    ]
+
+    var body: some View {
+        VStack(spacing: 8) {
+            TextField("Agent task, file, URL, or command…", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 15))
+                .padding(.horizontal, 12)
+                .frame(height: 40)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
+                .focused($focused)
+                .onSubmit { model.pickerSubmit(query) }
+                .onExitCommand { model.pickerPoint = nil }
+                .onKeyPress { press in
+                    // Single keys pick a type while the field is empty.
+                    guard query.isEmpty, press.modifiers.isEmpty else { return .ignored }
+                    let c = press.characters.lowercased()
+                    if let item = items.first(where: { $0.key == c }) { model.pick(item.kind); return .handled }
+                    if c == "g" { model.pickerPoint = nil; model.controller?.newFrame(); return .handled }
+                    return .ignored
+                }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+                ForEach(items) { item in
+                    Button { model.pick(item.kind) } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: item.glyph)
+                                .font(.system(size: 15, weight: .medium))
+                                .frame(width: 34, height: 34)
+                                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(item.kind == .agent ? 0.85 : 0.07)))
+                                .foregroundStyle(item.kind == .agent ? Color(nsColor: .windowBackgroundColor) : .primary)
+                            Text(item.name).font(.system(size: 12, weight: .medium))
+                            Text(item.key.uppercased()).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button { model.pickerPoint = nil; model.controller?.newFrame() } label: {
+                    VStack(spacing: 6) {
+                        Image(systemName: "rectangle.dashed").font(.system(size: 15, weight: .medium))
+                            .frame(width: 34, height: 34)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.07)))
+                        Text("Frame").font(.system(size: 12, weight: .medium))
+                        Text("G").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, 8).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Text(hint).font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 6)
+        }
+        .padding(10)
+        .frame(width: 400)
+        .pitwallGlass(cornerRadius: 22)
+        .onAppear { DispatchQueue.main.async { focused = true } }
+    }
+
+    private var hint: String {
+        let s = query.trimmingCharacters(in: .whitespaces)
+        if s.isEmpty { return "Return opens a terminal. Type a sentence to start an agent." }
+        if s.hasPrefix("http") || s.hasPrefix("localhost") { return "Return opens a browser tile" }
+        if s.hasPrefix("/") || s.hasPrefix("~") { return "Return opens this path" }
+        return AppModel.looksLikeCommand(s) ? "Return runs this command in a terminal" : "Return starts a Claude Code agent with this task"
+    }
+}

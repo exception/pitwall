@@ -1,0 +1,19 @@
+{
+  "name": "pitwall-remote-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/app.js --bundle --minify --format=esm --target=safari16 --outfile=../Resources/Remote/app.js && cp src/index.html src/app.css src/manifest.webmanifest ../Resources/Remote/ && cp node_modules/@xterm/xterm/css/xterm.css ../Resources/Remote/xterm.css",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
