@@ -223,12 +223,13 @@ struct TrailingControls: View {
 
 struct DispatchBar: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var draft: DispatchDraft
     @FocusState private var focused: Bool
     @State private var highlight = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField(placeholder, text: $model.dispatchText, axis: .vertical)
+            TextField(placeholder, text: $draft.text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
                 .lineLimit(1...6)

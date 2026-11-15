@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 
 /// Listens on the app socket for `pitwall` CLI, hook and MCP requests.
 final class ControlServer {
@@ -17,6 +18,23 @@ final class ControlServer {
     }
 
     private var watchdog: Timer?
+    private static var awake: NSObjectProtocol?
+    private static var awakeUntil = Date.distantPast
+
+    /// Keeps timers precise for a while even when Pitwall isn't frontmost
+    /// (App Nap otherwise coalesces them, making scripted typing and camera
+    /// moves stutter in recordings).
+    static func stayResponsive(for seconds: TimeInterval) {
+        awakeUntil = max(awakeUntil, Date().addingTimeInterval(seconds))
+        if awake == nil {
+            awake = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "Scripted UI")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds + 0.1) {
+            guard Date() >= awakeUntil, let a = awake else { return }
+            ProcessInfo.processInfo.endActivity(a)
+            awake = nil
+        }
+    }
 
     func start() {
         listen()
@@ -216,6 +234,7 @@ final class ControlServer {
             return ok(.string(ctl.newServer(command: cmd, cwd: args["cwd"], at: near(from), from: from)))
 
         case "view":
+            Self.stayResponsive(for: (Double(args["duration"] ?? "") ?? 0.32) + 2)
             guard let x = Double(args["x"] ?? ""), let y = Double(args["y"] ?? ""), let z = Double(args["zoom"] ?? "") else { return fail("view <x> <y> <zoom>") }
             ctl.canvas.animate(to: Viewport(origin: CGPoint(x: x, y: y), zoom: CGFloat(z)), duration: Double(args["duration"] ?? "") ?? 0.32)
             return ok()
@@ -224,19 +243,32 @@ final class ControlServer {
             // Drives the interface the way a person would (demos, video, tests).
             guard let model = ctl.model else { return fail("no window") }
             let text = args["text"] ?? ""
+            Self.stayResponsive(for: Double(text.count) * 0.045 + 3)
             func type(_ set: @escaping (String) -> Void, then: (() -> Void)? = nil) {
+                // One steady timer with no tolerance. (Scheduling every key up
+                // front with asyncAfter drifts: GCD's leeway grows with the delay.)
                 let chars = Array(text)
-                for i in 0...chars.count {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.045 * Double(i)) {
-                        set(String(chars[0..<i]))
-                        if i == chars.count { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { then?() } }
+                var i = 0
+                let timer = Timer(timeInterval: 0.045, repeats: true) { t in
+                    i += 1
+                    set(String(chars[0..<min(i, chars.count)]))
+                    if i >= chars.count {
+                        t.invalidate()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { then?() }
                     }
                 }
+                timer.tolerance = 0
+                set("")
+                if chars.isEmpty { then?(); return }
+                RunLoop.main.add(timer, forMode: .common)
             }
             switch args["action"] ?? "" {
             case "dispatch":
                 model.focusDispatch()
                 type({ model.dispatchText = $0 }, then: { model.dispatch() })
+            case "type":   // dispatch-bar typing without submitting (perf checks)
+                model.focusDispatch()
+                type({ model.dispatchText = $0 })
             case "search":
                 model.searchOpen = true
                 model.search.query = ""

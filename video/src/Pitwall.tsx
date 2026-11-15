@@ -9,62 +9,69 @@ const AMBER = "#F5A524";
 const BG = "#0B0C0E";
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif";
 
-/** One footage scene: a source clip range, its caption, and timed effects (source seconds). */
+/** One footage scene: source segments (each with its own speed), a caption, timed effects (source seconds). */
+type Seg = [number, number, number]; // from, to, rate
 type Scene = {
   clip: string;
-  from: number;  // source seconds
-  to: number;
-  rate: number;
+  segs: Seg[];
   title: string;
   sub: string;
   sfx?: { at: number; name: string; volume?: number }[];
   ticks?: [number, number, number]; // typing: start, end, count (source seconds)
-  /** Slow push-in: [scale, focusX, focusY] at the start and end (focus in 0..1 of the window). */
-  cam?: [[number, number, number], [number, number, number]];
 };
 
 const scenes: Scene[] = [
   {
-    clip: "c1-dispatch", cam: [[1.0, 0.55, 0.55], [1.32, 0.56, 0.42]], from: 0.4, to: 13.4, rate: 1.15,
+    clip: "c1-dispatch", segs: [[0.8, 4.8, 1], [4.8, 16.6, 2.6]],
     title: "Hand off a task.", sub: "Every agent runs in a real terminal on one infinite canvas.",
-    ticks: [0.7, 3.7, 24], sfx: [{ at: 4.2, name: "pop" }, { at: 4.4, name: "whoosh", volume: 0.5 }],
+    ticks: [1.0, 4.0, 30], sfx: [{ at: 4.6, name: "pop" }, { at: 4.8, name: "whoosh", volume: 0.45 }],
   },
   {
-    clip: "c2-zoomout", from: 0.9, to: 5.6, rate: 1,
+    clip: "c2-zoomout", segs: [[1.0, 5.4, 1.25]],
     title: "Run them all at once.", sub: "Zoom out and every agent becomes a status card.",
     sfx: [{ at: 1.5, name: "whoosh", volume: 0.8 }],
   },
   {
-    clip: "c3-approve", cam: [[1.05, 0.7, 0.45], [1.38, 0.78, 0.38]], from: 3.2, to: 12.4, rate: 1.1,
+    clip: "c3-approve", segs: [[2.6, 10.6, 1.2], [10.6, 14.2, 2.5]],
     title: "Know who needs you.", sub: "Approve or deny from one Inbox, without hunting for the tab.",
-    sfx: [{ at: 4.4, name: "chime" }, { at: 6.6, name: "whoosh", volume: 0.35 }, { at: 9.2, name: "pop" }],
+    sfx: [{ at: 3.5, name: "chime" }, { at: 6.0, name: "whoosh", volume: 0.35 }, { at: 8.2, name: "pop" }],
   },
   {
-    clip: "c6-watch", cam: [[1.12, 0.6, 0.4], [1.3, 0.62, 0.38]], from: 0.8, to: 14.2, rate: 1.3,
+    clip: "c6-watch", segs: [[1.0, 3.6, 1], [3.6, 11.6, 3.2], [11.6, 14.2, 1]],
     title: "Tests fail? It closes the loop.", sub: "The failure goes to the agent, and Pitwall reruns the tests when it's done.",
-    sfx: [{ at: 2.3, name: "fail" }, { at: 11.8, name: "pass" }],
+    sfx: [{ at: 2.2, name: "fail" }, { at: 12.6, name: "pass" }],
   },
   {
-    clip: "c7-pan", cam: [[1.0, 0.5, 0.5], [1.12, 0.55, 0.5]], from: 1.0, to: 6.0, rate: 1,
+    clip: "c7-pan", segs: [[1.2, 5.8, 1.3]],
     title: "Everything else, on the same wall.", sub: "Live diffs, watches, pull requests and dev servers, linked to their agent.",
     sfx: [{ at: 1.6, name: "whoosh", volume: 0.5 }],
   },
   {
-    clip: "c4-search", cam: [[1.0, 0.5, 0.3], [1.3, 0.5, 0.22]], from: 0.8, to: 6.3, rate: 1,
+    clip: "c4-search", segs: [[1.0, 5.4, 1]],
     title: "Search every terminal.", sub: "The full history of every agent, on every board.",
     ticks: [1.4, 1.75, 7],
   },
   {
-    clip: "c5-frames", from: 0.8, to: 8.4, rate: 1.1,
+    clip: "c5-frames", segs: [[0.8, 7.8, 1.4]],
     title: "Group the work.", sub: "Frames collapse to a strip that still shows who needs you.",
     sfx: [{ at: 1.6, name: "whoosh", volume: 0.3 }, { at: 2.8, name: "whoosh", volume: 0.3 }, { at: 5.6, name: "whoosh", volume: 0.3 }],
   },
 ];
 
-const INTRO = 105;
-const OUTRO = 165;
-const XF = 12; // crossfade frames
-const len = (s: Scene) => Math.round(((s.to - s.from) / s.rate) * FPS);
+const segLen = ([f, t, r]: Seg) => Math.round(((t - f) / r) * FPS);
+/** Output frame (within the scene) for a source time. */
+const localFrame = (sc: Scene, src: number) => {
+  let acc = 0;
+  for (const g of sc.segs) {
+    if (src <= g[1]) return acc + Math.round(((Math.max(src, g[0]) - g[0]) / g[2]) * FPS);
+    acc += segLen(g);
+  }
+  return acc;
+};
+const INTRO = 75;
+const OUTRO = 120;
+const XF = 10; // crossfade frames
+const len = (s: Scene) => s.segs.reduce((n, g) => n + segLen(g), 0);
 const starts: number[] = [];
 {
   let t = INTRO - XF;
@@ -110,14 +117,6 @@ const Caption: React.FC<{ title: string; sub: string }> = ({ title, sub }) => {
   );
 };
 
-const camStyle = (scene: Scene, f: number, total: number): React.CSSProperties => {
-  if (!scene.cam) return { width: "100%", height: "100%" };
-  const [[s0, x0, y0], [s1, x1, y1]] = scene.cam;
-  const p = interpolate(f, [0, total], [0, 1], { extrapolateRight: "clamp", easing: Easing.inOut(Easing.cubic) });
-  const sc = s0 + (s1 - s0) * p, fx = x0 + (x1 - x0) * p, fy = y0 + (y1 - y0) * p;
-  return { width: "100%", height: "100%", transform: `scale(${sc})`, transformOrigin: `${fx * 100}% ${fy * 100}%` };
-};
-
 /** The app window: footage in a rounded frame with a soft shadow. */
 const Window: React.FC<{ scene: Scene }> = ({ scene }) => {
   const f = useCurrentFrame();
@@ -131,12 +130,17 @@ const Window: React.FC<{ scene: Scene }> = ({ scene }) => {
       borderRadius: 18, overflow: "hidden",
       boxShadow: "0 40px 120px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.09)",
     }}>
-      <div style={camStyle(scene, f, len(scene))}>
-        <OffthreadVideo src={staticFile(`footage/${scene.clip}.mp4`)} startFrom={Math.round(scene.from * FPS)}
-          playbackRate={scene.rate} muted style={{ width: W, height: H }} />
-        {/* Hide the screen-capture indicator macOS draws in the window's corner. */}
-        <div style={{ position: "absolute", left: 0, top: 0, width: 92, height: 30, background: "#0F1012" }} />
-      </div>
+      {scene.segs.map((g, i) => {
+        const from = scene.segs.slice(0, i).reduce((n, x) => n + segLen(x), 0);
+        return (
+          <Sequence key={i} from={from} durationInFrames={segLen(g)} layout="none">
+            <OffthreadVideo src={staticFile(`footage/${scene.clip}.mp4`)} startFrom={Math.round(g[0] * FPS)}
+              playbackRate={g[2]} muted style={{ position: "absolute", width: W, height: H }} />
+          </Sequence>
+        );
+      })}
+      {/* Hide the screen-capture indicator macOS draws in the window's corner. */}
+      <div style={{ position: "absolute", left: 0, top: 0, width: 92, height: 30, background: "#0F1012" }} />
     </div>
   );
 };
@@ -144,12 +148,12 @@ const Window: React.FC<{ scene: Scene }> = ({ scene }) => {
 const SceneView: React.FC<{ scene: Scene }> = ({ scene }) => {
   const f = useCurrentFrame();
   const total = len(scene);
-  const toLocal = (src: number) => Math.round(((src - scene.from) / scene.rate) * FPS);
+  const toLocal = (src: number) => localFrame(scene, src);
   return (
     <AbsoluteFill style={{ opacity: fade(f, total) }}>
       <Window scene={scene} />
       <Caption title={scene.title} sub={scene.sub} />
-      {(scene.sfx ?? []).filter((e) => e.at >= scene.from && e.at <= scene.to).map((e, i) => (
+      {(scene.sfx ?? []).filter((e) => e.at >= scene.segs[0][0] && e.at <= scene.segs[scene.segs.length - 1][1]).map((e, i) => (
         <Sequence key={i} from={toLocal(e.at)} durationInFrames={60}>
           <Audio src={staticFile(`audio/${e.name}.wav`)} volume={e.volume ?? 0.7} />
         </Sequence>

@@ -11,6 +11,10 @@ struct Toast: Identifiable, Equatable {
     var tileID: String?
 }
 
+final class DispatchDraft: ObservableObject {
+    @Published var text = ""
+}
+
 /// UI state shared by the SwiftUI overlays.
 final class AppModel: ObservableObject {
     weak var controller: CanvasController?
@@ -22,7 +26,13 @@ final class AppModel: ObservableObject {
     @Published var pickerPoint: (world: CGPoint, view: CGPoint)? = nil {
         didSet { onPickerChange?() }
     }
-    @Published var dispatchText = ""
+    /// The dispatch bar's draft lives in its own object so typing only
+    /// re-renders the bar, not every view that watches the app model.
+    let draft = DispatchDraft()
+    var dispatchText: String {
+        get { draft.text }
+        set { draft.text = newValue }
+    }
     @Published var dispatchWorktree = Prefs.shared.worktreeByDefault
     @Published var dispatchAgent: AgentKind = AgentKind(rawValue: Prefs.shared.defaultAgent) ?? .claude
     @Published var dispatchRepo: String?

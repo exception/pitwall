@@ -121,7 +121,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let sidebar = host(SidebarView(model: model))
         let toolbar = host(ToolbarPill(model: model))
         let trailing = host(TrailingControls(model: model))
-        let dispatch = host(DispatchBar(model: model))
+        let dispatch = host(DispatchBar(model: model, draft: model.draft))
         let toasts = host(ToastStack(model: model))
         let inbox = host(InboxView(model: model))
         inboxHost = inbox
