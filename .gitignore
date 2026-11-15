@@ -10,3 +10,4 @@ vendor/ghostty-vt-iossim/
 remote-web/node_modules/
 Pitwall.xcodeproj/
 remote-web/test/*.log
+CLAUDE.md
