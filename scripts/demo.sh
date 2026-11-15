@@ -7,6 +7,9 @@ cd "${0:A:h}/.."
 APP=build/dd/Build/Products/Debug/Pitwall.app
 H=$APP/Contents/Helpers/pitwall
 export PITWALL_HOME=$PWD/build/demo/home
+# Run from inside Pitwall, the shell carries the live app's socket and tile:
+# drop them, or the helper would drive the real app instead of this one.
+unset PITWALL_SOCKET PITWALL_TILE_ID PITWALL_BOARD_ID PITWALL_SESSION_ID PITWALL_CLI
 DEMO=$PWD/build/demo/trackside
 [[ -S $PITWALL_HOME/run/daemon.sock ]] && echo '{"op":"shutdown"}' | nc -U $PITWALL_HOME/run/daemon.sock >/dev/null 2>&1
 rm -rf $PITWALL_HOME; sleep 0.3

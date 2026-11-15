@@ -148,6 +148,7 @@ final class ControlServer {
         if let v = t.watchCommand { o["command"] = .string(v) }
         if let v = t.prRef { o["pr"] = .string(v) }
         if t.keepAlive == true { o["server"] = .bool(true) }
+        if let v = t.background, !v.isEmpty { o["background"] = .string(v.joined(separator: ",")) }
         if let f = t.frameGroupID { o["frame_id"] = .string(f) }
         o["frame"] = .string([t.frame.minX, t.frame.minY, t.frame.width, t.frame.height].map { String(Int($0)) }.joined(separator: ","))
         return .object(o)
@@ -284,7 +285,8 @@ final class ControlServer {
             case "sidebar": model.sidebarVisible = text != "hide"
             case "appearance": Prefs.shared.appearance = text
             case "devmode": Prefs.shared.devMode = text != "off"
-            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode")
+            case "fullscreen": ctl.toggleFullScreen(text.isEmpty ? nil : text)
+            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode|fullscreen")
             }
             return ok()
 

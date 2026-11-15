@@ -115,6 +115,9 @@ struct BoardRow: View {
             if activity.working > 0 && activity.waiting + activity.failing + activity.done == 0 {
                 Circle().fill(Color(ns: Theme.green)).frame(width: 7, height: 7)
                     .overlay(Circle().stroke(Color(ns: Theme.green).opacity(0.3), lineWidth: 3))
+            } else if activity.background > 0 && activity.working + activity.waiting + activity.failing + activity.done == 0 {
+                // Only background work: a hollow ring, live but nothing in front.
+                Circle().stroke(Color(ns: Theme.green), lineWidth: 1.6).frame(width: 7, height: 7)
             }
             if activity.done > 0 { tag(activity.done, symbol: "checkmark", Theme.blue) }
             if activity.failing > 0 { tag(activity.failing, symbol: "exclamationmark", Theme.red) }

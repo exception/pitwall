@@ -12,6 +12,9 @@ cd "${0:A:h}/.."
 APP=build/dd/Build/Products/Debug/Pitwall.app
 H=$APP/Contents/Helpers/pitwall
 export PITWALL_HOME=$PWD/build/ui-test/home
+# Run from inside Pitwall, the shell carries the live app's socket and tile:
+# drop them, or the helper would drive the real app instead of this one.
+unset PITWALL_SOCKET PITWALL_TILE_ID PITWALL_BOARD_ID PITWALL_SESSION_ID PITWALL_CLI
 OUT=build/ui-test
 FAILED=0
 mkdir -p $OUT
@@ -25,8 +28,9 @@ SW
 
 [[ -x build/greenpx ]] || swiftc -O scripts/greenpx.swift -o build/greenpx 2>/dev/null
 
-start_app() { ($APP/Contents/MacOS/Pitwall >$OUT/app.log 2>&1 &); sleep 4; PID=$(pgrep -nf "MacOS/Pitwall"); }
-stop_app() { kill $PID 2>/dev/null; sleep 1.2; }
+# Track our own PID: other checkouts may be running test instances too.
+start_app() { $APP/Contents/MacOS/Pitwall >$OUT/app.log 2>&1 & PID=$!; disown; sleep 4; }
+stop_app() { [[ -n ${PID:-} ]] && kill $PID 2>/dev/null; PID=; sleep 1.2; }
 shot() { screencapture -x -o -l $(build/widpid $PID) $OUT/$1.png; }
 reset() {
   [[ -S $PITWALL_HOME/run/daemon.sock ]] && echo '{"op":"shutdown"}' | nc -U $PITWALL_HOME/run/daemon.sock >/dev/null 2>&1
@@ -79,15 +83,57 @@ scenario_status() {
   stop_app
 }
 
+scenario_background() {
+  echo "background: work left running after a turn keeps the agent live, not Done"
+  reset; start_app
+  # A stand-in agent CLI named "claude" that leaves a command running in its
+  # own session, the way Claude Code runs a background Bash call.
+  mkdir -p $OUT/bin
+  [[ -x $OUT/bin/claude ]] || cc -x c -o $OUT/bin/claude - <<'C'
+#include <unistd.h>
+int main(int c, char **v) { if (fork() == 0) { setsid(); execl("/bin/sleep", "sleep", c > 1 ? v[1] : "12", (char *)0); } for (;;) pause(); }
+C
+  A=$($H tile new --title "Agent" -- $PWD/$OUT/bin/claude 12); sleep 5.5   # one poll: seen as an agent
+  echo '{"prompt":"Run the suite in the background"}' | PITWALL_TILE_ID=$A $H hook UserPromptSubmit
+  echo '{"last_assistant_message":"Started the tests in the background."}' | PITWALL_TILE_ID=$A $H hook Stop; sleep 0.5
+  check "turn ended with work running: idle, not done ($(tile_field $A state))" '[[ $(tile_field $A state) == idle ]]'
+  check "background lists the command ($(tile_field $A background))" '[[ $(tile_field $A background) == sleep ]]'
+  shot background
+  sleep 24   # the command exits (~7s), poll notices (≤4s), 10s grace: nobody picked the turn back up
+  check "settles to done once the work ends ($(tile_field $A state))" '[[ $(tile_field $A state) == done ]]'
+  check "background cleared" '[[ -z $(tile_field $A background) ]]'
+
+  # Background sub-agent: returns at once, finishes on SubagentStop.
+  B=$($H tile new --title "Lead" -- python3 -c 'import time; time.sleep(600)'); sleep 1
+  echo '{"prompt":"Audit deps"}' | PITWALL_TILE_ID=$B $H hook UserPromptSubmit
+  echo '{"tool_name":"Agent","tool_use_id":"bg1","tool_input":{"description":"Audit deps","subagent_type":"general-purpose","run_in_background":true}}' | PITWALL_TILE_ID=$B $H hook PreToolUse
+  echo '{"tool_name":"Agent","tool_use_id":"bg1","tool_response":{"status":"async_launched","agentId":"ag-1"}}' | PITWALL_TILE_ID=$B $H hook PostToolUse
+  echo '{"last_assistant_message":"Auditing in the background."}' | PITWALL_TILE_ID=$B $H hook Stop; sleep 0.6
+  check "sub-agent still working after its launch returned" '$H tile list | python3 -c "import json,sys; sys.exit(0 if any(t[\"kind\"]==\"subagent\" and t[\"state\"]==\"working\" for t in json.load(sys.stdin)) else 1)"'
+  check "lead is idle with background work ($(tile_field $B background))" '[[ $(tile_field $B state) == idle && $(tile_field $B background) == "Audit deps" ]]'
+  shot background-subagent
+  echo '{"agent_id":"ag-1"}' | PITWALL_TILE_ID=$B $H hook SubagentStop; sleep 0.5
+  check "sub-agent done on SubagentStop" '! $H tile list | grep -q "\"working\""'
+  check "lead's background cleared" '[[ -z $(tile_field $B background) ]]'
+  echo '{"last_assistant_message":"Audit done."}' | PITWALL_TILE_ID=$B $H hook Stop; sleep 0.5
+  check "lead done after its follow-up turn" '[[ $(tile_field $B state) == done || $(tile_field $B state) == idle ]]'
+  stop_app
+}
+
 scenario_fullscreen() {
   echo "fullscreen: a tile fills the window at 100% and restores its grid"
   reset; start_app
   S=$($H tile new --cwd $PWD --title "Full"); sleep 2
   $H tile send $S $'echo G1 $(stty size)\n'; sleep 0.8
-  osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $PID) to true" -e 'delay 0.3' \
-    -e 'tell application "System Events" to keystroke "f" using {command down, shift down}' >/dev/null; sleep 1
+  $H ui fullscreen $S >/dev/null; sleep 1
   $H tile send $S $'echo G2 $(stty size)\n'; sleep 0.8; shot fullscreen
-  osascript -e 'tell application "System Events" to keystroke "f" using {command down, shift down}' >/dev/null; sleep 1
+  # Full screen survives a trip to another board and back.
+  $H board new Elsewhere >/dev/null; sleep 0.8; $H board switch Home >/dev/null; sleep 1
+  $H tile send $S $'echo G4 $(stty size)\n'; sleep 0.8; shot fullscreen-return
+  local g4=$($H tile read $S --bytes 3000 | grep -a '^G4' | tail -1)
+  local g2b=$($H tile read $S --bytes 3000 | grep -a '^G2' | tail -1)
+  check "still full screen after switching boards ($g2b → $g4)" '[[ -n "$g4" && "${g4#G4 }" == "${g2b#G2 }" ]]'
+  $H ui fullscreen $S >/dev/null; sleep 1
   $H tile send $S $'echo G3 $(stty size)\n'; sleep 0.8
   local txt=$($H tile read $S --bytes 3000)
   local g1=$(echo "$txt" | grep -a '^G1' | tail -1) g2=$(echo "$txt" | grep -a '^G2' | tail -1) g3=$(echo "$txt" | grep -a '^G3' | tail -1)
@@ -212,7 +258,7 @@ assert f[0]<=t[0] and f[1]<=t[1] and f[0]+f[2]>=t[0]+t[2] and f[1]+f[3]>=t[1]+t[
   stop_app
 }
 
-if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals handoff watch boardtools frames); fi
+if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status background fullscreen approvals handoff watch boardtools frames); fi
 for s in $scenarios; do scenario_$s; done
 reset
 echo; [[ $FAILED == 0 ]] && echo "All UI scenarios passed. Screenshots: $OUT/" || { echo "Some UI scenarios FAILED. See $OUT/"; exit 1; }

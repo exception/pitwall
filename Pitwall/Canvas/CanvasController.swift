@@ -35,7 +35,14 @@ final class CanvasController: NSObject {
     /// Brings views in line with the current board.
     func reconcile() {
         let b = board
+        var restoreFullScreen: String?
         if renderedBoardID != b.id {
+            // Full screen belongs to the board: park it, and pick up the new board's.
+            if let old = renderedBoardID { fullScreenByBoard[old] = fullScreenTileID }
+            let wasFull = fullScreenTileID != nil
+            fullScreenTileID = nil
+            restoreFullScreen = fullScreenByBoard.removeValue(forKey: b.id).flatMap { b.tile($0) != nil ? $0 : nil }
+            if wasFull && restoreFullScreen == nil { model?.fullScreen = false }
             // Switching boards: tear down views (sessions keep running in the daemon).
             for (_, v) in tileViews { v.content.willClose(); v.removeFromSuperview() }
             tileViews.removeAll()
@@ -77,6 +84,12 @@ final class CanvasController: NSObject {
                 canvas.framesLayer.addSubview(v)
             }
             frameViews[f.id]?.summary = summary(of: f.id)
+        }
+        if let f = restoreFullScreen, let v = tileViews[f] {
+            fullScreenTileID = f
+            v.isFullScreen = true
+            if model?.fullScreen != true { model?.fullScreen = true }
+            focus(tileID: f, makeFirstResponder: true)
         }
         layoutAll(live: false)
         updateAttentionBadge()
@@ -481,6 +494,8 @@ final class CanvasController: NSObject {
     // MARK: Full screen
 
     private(set) var fullScreenTileID: String?
+    /// Boards not on screen → their full-screen tile, restored on switching back.
+    private var fullScreenByBoard: [String: String] = [:]
 
     func toggleFullScreen(_ id: String? = nil) {
         if let cur = fullScreenTileID, id == nil || id == cur { exitFullScreen(); return }
@@ -541,10 +556,9 @@ final class CanvasController: NSObject {
 
     func switchBoard(_ id: String) {
         guard id != store.currentBoardID else { return }
-        if fullScreenTileID != nil { exitFullScreen() }
         store.currentBoardID = id
         store.scheduleSave()
-        reconcile()
+        reconcile()   // parks this board's full-screen tile and restores the other's
     }
 
     /// Snap all tiles into a tidy grid (the "mosaic" layout command).
@@ -805,6 +819,7 @@ final class CanvasController: NSObject {
         guard store.findTile(tileID) != nil else { return nil }
         hookedTiles.insert(tileID)
         screenWaiting.remove(tileID)
+        backgroundEndedAt[tileID] = nil
         let event = args["event"] ?? ""
         let tool = args["tool_name"] ?? ""
         DevStats.hookEvents += 1
@@ -854,15 +869,31 @@ final class CanvasController: NSObject {
             }
         case "PreToolUse":
             if tool == "Task" || tool == "Agent" {
+                let bg = ["1", "true"].contains(args["input.run_in_background"] ?? "")
+                if bg, let u = args["tool_use_id"] { backgroundToolUses.insert(u) }
                 spawnSubagent(parent: tileID, toolUseID: args["tool_use_id"],
                               description: args["input.description"] ?? "Sub-agent", type: args["input.subagent_type"])
             }
             setState(tileID, .working, message: describe(tool: tool, args: args))
         case "PostToolUse":
-            if tool == "Task" || tool == "Agent" { finishSubagent(parent: tileID, toolUseID: args["tool_use_id"]) }
+            if tool == "Task" || tool == "Agent" {
+                let u = args["tool_use_id"]
+                let launched = u.map { backgroundToolUses.remove($0) != nil } ?? false
+                if launched || args["response.status"] == "async_launched" {
+                    // It returned right away and keeps running: SubagentStop ends it.
+                    if let aid = args["response.agentId"], let k = subagentTile(parent: tileID, toolUseID: u) { backgroundSubagents[aid] = k }
+                } else {
+                    finishSubagent(parent: tileID, toolUseID: u)
+                }
+                refreshBackground(tileID)
+            }
             if store.findTile(tileID)?.tile.state == .waiting { setState(tileID, .working) }
         case "SubagentStop":
-            break
+            if let aid = args["agent_id"], let k = backgroundSubagents.removeValue(forKey: aid) {
+                if store.findTile(k)?.tile.state == .working { setState(k, .done) }
+                refreshBackground(tileID)
+                noteBackgroundEnded(tileID)
+            }
         case "Notification":
             let msg = args["message"] ?? "Needs your input"
             // "Waiting for your input" is an idle reminder after a finished
@@ -881,9 +912,16 @@ final class CanvasController: NSObject {
                 return (try? JSONSerialization.data(withJSONObject: out)).map { String(decoding: $0, as: UTF8.self) }
             }
             let summary = args["last_assistant_message"].map { String($0.prefix(160)) }
+            // Background work still running: the agent picks up again when it
+            // ends, so this turn isn't the finish (no Done, no hand-off yet).
+            if !refreshBackground(tileID, turnEnded: true).isEmpty {
+                setState(tileID, .idle, message: summary)
+                break
+            }
             setState(tileID, focusedTileID == tileID && NSApp.isActive ? .idle : .done, message: summary)
             handOff(from: tileID, result: args["last_assistant_message"] ?? "")
         case "SessionEnd":
+            endBackground(of: tileID)
             setState(tileID, .idle, message: nil)
         default:
             break
@@ -1024,6 +1062,61 @@ final class CanvasController: NSObject {
         store.update(b.id) { $0.tiles.append(t); $0.links.append(Link(from: p.id, to: t.id, kind: .spawned)) }
         layoutSubagents()
         if b.id == board.id { reconcile() }
+    }
+
+    private func subagentTile(parent: String, toolUseID: String?) -> String? {
+        guard let (b, _) = store.findTile(parent) else { return nil }
+        let kids = b.links.filter { $0.from == parent && $0.kind == .spawned }.map(\.to)
+        return b.tiles.first { kids.contains($0.id) && $0.kind == .subagent && $0.sessionID == toolUseID }?.id
+    }
+
+    // MARK: Background work
+
+    /// Re-reads what the agent has running in the background and stores it on
+    /// the tile. Shell commands only count once a turn has ended (mid-turn the
+    /// tool call in flight looks the same); background sub-agents always count.
+    @discardableResult
+    func refreshBackground(_ tileID: String, turnEnded: Bool? = nil) -> [String] {
+        guard let t = store.findTile(tileID)?.tile else { return [] }
+        let between = turnEnded ?? (t.state != .working && t.state != .waiting)
+        var work: [String] = []
+        if between, let pid = agentPID[tileID] { work = Processes.toolCommands(under: pid) }
+        let kids = Set(backgroundSubagents.values)
+        if let b = store.findTile(tileID)?.board {
+            let mine = Set(b.links.filter { $0.from == tileID && $0.kind == .spawned }.map(\.to))
+            work += b.tiles.filter { mine.contains($0.id) && kids.contains($0.id) && $0.state == .working }
+                .map { $0.statusMessage ?? "Sub-agent" }
+        }
+        let value: [String]? = work.isEmpty ? nil : work
+        if t.background != value {
+            store.updateTile(tileID) { $0.background = value }
+            reconcileIfCurrent(tileID)
+            model?.objectWillChange.send()
+        }
+        return work
+    }
+
+    /// Background work ran out between turns: the agent normally wakes up to
+    /// read the results. If it doesn't, the turn it already finished stands.
+    private func noteBackgroundEnded(_ tileID: String) {
+        guard let t = store.findTile(tileID)?.tile, t.kind == .agent, t.state == .idle, (t.background ?? []).isEmpty else { return }
+        backgroundEndedAt[tileID] = Date()
+    }
+
+    private func endBackground(of tileID: String) {
+        for (aid, k) in backgroundSubagents where subagentParent(k) == tileID {
+            backgroundSubagents[aid] = nil
+            if store.findTile(k)?.tile.state == .working { setState(k, .done) }
+        }
+        backgroundEndedAt[tileID] = nil
+        if store.findTile(tileID)?.tile.background != nil {
+            store.updateTile(tileID) { $0.background = nil }
+            reconcileIfCurrent(tileID)
+        }
+    }
+
+    private func subagentParent(_ id: String) -> String? {
+        store.findTile(id)?.board.links.first { $0.to == id && $0.kind == .spawned }?.from
     }
 
     private func finishSubagent(parent: String, toolUseID: String?) {
@@ -1184,6 +1277,17 @@ final class CanvasController: NSObject {
                 let fg = info.foregroundName ?? ""
                 let isAgent = Self.isAgentProcess(fg)
                 if isAgent { agentSeen.insert(t.id) }
+                agentPID[t.id] = isAgent ? info.foregroundPid : nil
+                if t.kind == .agent {
+                    let had = !(t.background ?? []).isEmpty
+                    if !refreshBackground(t.id).isEmpty { backgroundEndedAt[t.id] = nil } else if had { noteBackgroundEnded(t.id) }
+                    if let ended = backgroundEndedAt[t.id], Date().timeIntervalSince(ended) > 10 {
+                        backgroundEndedAt[t.id] = nil
+                        if store.findTile(t.id)?.tile.state == .idle {
+                            setState(t.id, focusedTileID == t.id && NSApp.isActive ? .idle : .done, message: store.findTile(t.id)?.tile.statusMessage)
+                        }
+                    }
+                }
                 if isAgent && t.kind == .terminal {
                     store.updateTile(t.id) { $0.kind = .agent; if $0.autoName == nil { $0.autoName = fg.first?.isNumber == true ? "Claude" : fg.capitalized } }
                 }
@@ -1194,6 +1298,7 @@ final class CanvasController: NSObject {
                 // is still in front while the agent starts up.
                 if t.kind == .agent, shells.contains(fg), agentSeen.contains(t.id), t.state == .working || t.state == .waiting {
                     agentSeen.remove(t.id)
+                    endBackground(of: t.id)
                     setState(t.id, .idle, message: "Agent exited")
                 }
             }
@@ -1223,6 +1328,14 @@ final class CanvasController: NSObject {
     /// Where the next new tile goes (set by "New agent here" and the canvas menu).
     /// Agent tiles whose agent process we've seen in the foreground.
     var agentSeen = Set<String>()
+    /// Agent tiles → the agent CLI's process (group leader), from the last poll.
+    var agentPID: [String: pid_t] = [:]
+    /// Background sub-agents: Task tool_use_ids launched with run_in_background,
+    /// and Claude's agent ids → their sub-agent tile (SubagentStop finishes them).
+    var backgroundToolUses = Set<String>()
+    var backgroundSubagents: [String: String] = [:]
+    /// Agents whose background work ended without the agent picking up again yet.
+    var backgroundEndedAt: [String: Date] = [:]
     /// Agent → watch tile whose failure it was sent; rerun the watch when it finishes.
     var fixRequests: [String: String] = [:]
     var pendingPlacement: (point: CGPoint?, frameID: String?, expires: Date)?

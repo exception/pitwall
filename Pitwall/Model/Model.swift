@@ -80,6 +80,9 @@ struct Tile: Codable, Identifiable, Equatable {
     var autoSend: Bool?
     /// Dev servers: restart the command when it exits or crashes.
     var keepAlive: Bool?
+    /// Agents: work still running after the turn ended (background shell
+    /// commands by name, background sub-agents by description).
+    var background: [String]?
 
     var displayName: String {
         if let name, !name.isEmpty { return name }
@@ -100,6 +103,8 @@ struct Tile: Codable, Identifiable, Equatable {
     var worktreePath: String? { worktree ?? detectedWorktree }
 
     var isTerminalBacked: Bool { kind == .terminal || kind == .agent || kind == .logs }
+    /// Between turns with background work still going: live, but not Working.
+    var hasBackgroundWork: Bool { !(background ?? []).isEmpty && state != .working && state != .waiting }
 }
 
 /// A connection between two tiles.

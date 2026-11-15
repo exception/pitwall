@@ -172,6 +172,10 @@ final class TileView: NSView {
         if Prefs.shared.showCost, let c = tile.costUSD, c >= 0.01 { add(String(format: "$%.2f", c), Theme.text3) }
         if let a = tile.diffAdded, a > 0 { add("+\(a)", Theme.green) }
         if let r = tile.diffRemoved, r > 0 { add("−\(r)", Theme.red) }
+        if tile.hasBackgroundWork, let bg = tile.background {
+            let names = bg.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            add(bg.count == 1 ? "running \(names[0])" : "\(bg.count) in background" + (names.count == 1 ? " · \(names[0])" : ""), Theme.green)
+        }
         if tile.kind != .terminal || tile.state != .idle {
             if tile.state != .idle {
                 add("\(tile.state == .waiting ? "needs you" : tile.state.label.lowercased()) · \(tile.stateSince.elapsedShort)",

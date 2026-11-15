@@ -46,7 +46,14 @@ Internal:
 
 enum Control {
     static var socketPath: String {
-        ProcessInfo.processInfo.environment[PitwallEnv.appSocket] ?? PitwallPaths.appSocket.path
+        let env = ProcessInfo.processInfo.environment
+        guard let inherited = env[PitwallEnv.appSocket] else { return PitwallPaths.appSocket.path }
+        // An explicit PITWALL_HOME names the instance: a socket inherited from
+        // another one (e.g. a shell inside the real app) must not win.
+        if let home = env["PITWALL_HOME"], !home.isEmpty, !inherited.hasPrefix(PitwallPaths.runDir.path) {
+            return PitwallPaths.appSocket.path
+        }
+        return inherited
     }
     static var tileID: String? { ProcessInfo.processInfo.environment[PitwallEnv.tileID] }
     static var boardID: String? { ProcessInfo.processInfo.environment[PitwallEnv.boardID] }
@@ -140,7 +147,7 @@ func runHook(_ args: [String]) -> Int32 {
             if let v = obj[key] { a[key] = "\(v)" }
         }
         if let ti = obj["tool_input"] as? [String: Any] {
-            for key in ["description", "subagent_type", "command", "file_path", "url", "pattern", "prompt"] {
+            for key in ["description", "subagent_type", "command", "file_path", "url", "pattern", "prompt", "run_in_background"] {
                 if let v = ti[key] { a["input." + key] = "\(v)" }
             }
             if let d = try? JSONSerialization.data(withJSONObject: ti), d.count < 8000 {
@@ -149,7 +156,10 @@ func runHook(_ args: [String]) -> Int32 {
         }
         if let sug = obj["permission_suggestions"],
            let d = try? JSONSerialization.data(withJSONObject: sug) { a["permission_suggestions"] = String(decoding: d, as: UTF8.self) }
-        if let tr = obj["tool_response"] as? [String: Any], let agentId = tr["agentId"] { a["response.agentId"] = "\(agentId)" }
+        if let tr = obj["tool_response"] as? [String: Any] {
+            if let agentId = tr["agentId"] { a["response.agentId"] = "\(agentId)" }
+            if let status = tr["status"] { a["response.status"] = "\(status)" }
+        }
         for key in ["prompt", "last_assistant_message", "input.prompt"] {
             if let v = a[key], v.count > 600 { a[key] = String(v.prefix(600)) }
         }
@@ -269,7 +279,7 @@ case "watch", "server":
     do { exit(Control.printResult(try Control.send(isServer ? "tile.server" : "tile.watch", args: a))) }
     catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
 case "ui":
-    guard let action = rest.first else { fputs("ui dispatch|search <text> | inbox | approve | close | sidebar show|hide | appearance light|dark|system\n", stderr); exit(2) }
+    guard let action = rest.first else { fputs("ui dispatch|search <text> | inbox | approve | close | sidebar show|hide | appearance light|dark|system | fullscreen [tile]\n", stderr); exit(2) }
     do { exit(Control.printResult(try Control.send("ui", args: ["action": action, "text": rest.dropFirst().joined(separator: " ")]))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "view":

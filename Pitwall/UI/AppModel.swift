@@ -12,7 +12,7 @@ struct Toast: Identifiable, Equatable {
 }
 
 struct BoardActivity: Equatable {
-    var waiting = 0, failing = 0, done = 0, working = 0
+    var waiting = 0, failing = 0, done = 0, working = 0, background = 0
 
     var summary: String {
         var p: [String] = []
@@ -20,6 +20,7 @@ struct BoardActivity: Equatable {
         if failing > 0 { p.append("\(failing) failing") }
         if done > 0 { p.append("\(done) finished") }
         if working > 0 { p.append("\(working) working") }
+        if background > 0 { p.append("\(background) running in background") }
         return p.isEmpty ? "Nothing running" : p.joined(separator: " · ")
     }
 }
@@ -110,6 +111,7 @@ final class AppModel: ObservableObject {
             case .working: a.working += 1
             case .idle: break
             }
+            if t.hasBackgroundWork { a.background += 1 }
         }
         return a
     }
