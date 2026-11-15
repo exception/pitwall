@@ -392,6 +392,10 @@ final class LinksView: NSView {
                 s.removeFromSuperlayer(); shapes[id] = nil
                 currents[id]?.glow.removeFromSuperlayer(); currents[id]?.sparks.removeFromSuperlayer(); currents[id] = nil
             }
+            // Arrowheads are keyed separately; drop any whose link is gone.
+            for (id, h) in arrowheads where !seen.contains(id) {
+                h.removeFromSuperlayer(); arrowheads[id] = nil
+            }
             updateCurrents(board: board)
 
             if let p = pending, let va = canvas.controller?.tileView(p.from) {

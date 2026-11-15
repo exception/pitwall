@@ -23,6 +23,8 @@ let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as
 for w in list where (w[kCGWindowOwnerPID as String] as? Int32) == pid && (w[kCGWindowLayer as String] as? Int) == 0 { print(w[kCGWindowNumber as String] as! Int); break }
 SW
 
+[[ -x build/greenpx ]] || swiftc -O scripts/greenpx.swift -o build/greenpx 2>/dev/null
+
 start_app() { ($APP/Contents/MacOS/Pitwall >$OUT/app.log 2>&1 &); sleep 4; PID=$(pgrep -nf "MacOS/Pitwall"); }
 stop_app() { kill $PID 2>/dev/null; sleep 1.2; }
 shot() { screencapture -x -o -l $(build/widpid $PID) $OUT/$1.png; }
@@ -110,7 +112,21 @@ scenario_approvals() {
   stop_app
 }
 
-if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals); fi
+scenario_handoff() {
+  echo "handoff: closing a linked tile leaves no stray line or arrowhead"
+  reset; start_app
+  A=$($H tile new --cwd $PWD --title "Up"); B=$($H tile new --cwd $PWD --title "Down"); sleep 1.5
+  $H link $A $B --handoff; PITWALL_TILE_ID=$A $H status working "Building"; sleep 1.5; shot handoff-linked
+  $H tile close $B; sleep 1; shot handoff-closed
+  # No arrowhead-green pixels should remain once the downstream tile is gone.
+  local n=$(build/greenpx $OUT/handoff-closed.png 930 780 1100 880)
+  local n0=$(build/greenpx $OUT/handoff-linked.png 930 780 1100 880)
+  check "arrowhead drawn while linked ($n0 green px)" '(( n0 >= 50 ))'
+  check "no link remnants after close ($n green px)" '(( n < 20 ))'
+  stop_app
+}
+
+if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals handoff); fi
 for s in $scenarios; do scenario_$s; done
 reset
 echo; [[ $FAILED == 0 ]] && echo "All UI scenarios passed. Screenshots: $OUT/" || { echo "Some UI scenarios FAILED. See $OUT/"; exit 1; }
