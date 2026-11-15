@@ -129,4 +129,29 @@ final class PitwallTests: XCTestCase {
         XCTAssertTrue(codex.contains("--image"), codex)
         XCTAssertTrue(codex.contains(" -- "), codex)
     }
+
+    func testWaitSpecs() {
+        XCTAssertEqual(CanvasController.waitSpec(run: "43775328604", pr: nil, command: nil),
+                       .init(command: "gh run watch 43775328604 --exit-status --interval 30", label: "CI run 43775328604"))
+        let url = CanvasController.waitSpec(run: "https://github.com/acme/web/actions/runs/123/job/9", pr: nil, command: nil)
+        XCTAssertEqual(url?.label, "CI run 123")
+        XCTAssertTrue(url?.command.contains("-R 'acme/web'") == true || url?.command.contains("-R acme/web") == true, url?.command ?? "")
+        XCTAssertNil(CanvasController.waitSpec(run: "not-a-run", pr: nil, command: nil))
+        XCTAssertEqual(CanvasController.waitSpec(run: nil, pr: "42", command: nil)?.label, "PR #42 checks")
+        XCTAssertEqual(CanvasController.waitSpec(run: nil, pr: nil, command: "kubectl rollout status deploy/api")?.command,
+                       "kubectl rollout status deploy/api")
+        XCTAssertNil(CanvasController.waitSpec(run: "", pr: " ", command: nil))
+    }
+
+    func testBlockingWaitDetection() {
+        let c = "gh run watch 43775328604 --exit-status --interval 30 > /dev/null 2>&1; gh run view 43775328604 --json conclusion"
+        XCTAssertEqual(CanvasController.blockingWait(c), "CI run 43775328604")
+        XCTAssertEqual(CanvasController.blockingWait("gh pr checks 12 --watch"), "PR checks")
+        XCTAssertEqual(CanvasController.blockingWait("kubectl -n x rollout status deploy/api"), "a rollout")
+        XCTAssertEqual(CanvasController.blockingWait("until curl -sf localhost:3000; do sleep 2; done"), "a poll loop")
+        XCTAssertEqual(CanvasController.blockingWait("sleep 120"), "a 120s timer")
+        XCTAssertNil(CanvasController.blockingWait("sleep 1 && npm test"))
+        XCTAssertNil(CanvasController.blockingWait("gh pr checks 12"))
+        XCTAssertNil(CanvasController.blockingWait("npm run build"))
+    }
 }

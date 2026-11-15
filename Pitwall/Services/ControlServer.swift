@@ -224,6 +224,16 @@ final class ControlServer {
             let id = ctl.newWatch(command: cmd, cwd: args["cwd"], at: near(from), from: from, autoSend: args["autosend"] == "1")
             return ok(.string(id))
 
+        case "tile.wait":
+            guard let spec = CanvasController.waitSpec(run: args["run"], pr: args["pr"], command: args["command"]) else {
+                return fail("give one of: run (a GitHub Actions run id or URL), pr (number or URL), or command")
+            }
+            ensureBoard(of: from)
+            let cwd = args["cwd"] ?? from.flatMap { store.findTile($0)?.tile.cwd }
+            let id = ctl.newWait(spec, note: args["then"], cwd: cwd, from: from)
+            let wake = from == nil ? "" : " When it finishes (success or failure) Pitwall will send you the result as a new message."
+            return ok(.string("Waiting on \(spec.label) in tile \(id) (`\(spec.command)`).\(wake) End your turn now instead of polling; don't run gh run watch, sleep or polling loops yourself."))
+
         case "watch.exit":
             guard let id = req.tileID ?? from, store.findTile(id) != nil else { return ok() }
             ctl.watchExited(id, code: Int(args["code"] ?? "") ?? 1)

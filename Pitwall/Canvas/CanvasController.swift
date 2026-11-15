@@ -757,8 +757,10 @@ final class CanvasController: NSObject {
             return "Those tiles aren't linked. Ask the user to connect them on the canvas."
         }
         guard target.kind == .agent || hookedTiles.contains(to) else { return "\(target.displayName) isn't running an agent." }
-        let fromName = store.findTile(from)?.tile.displayName ?? from
-        let msg = AgentMessage(from: from, fromName: fromName, text: text)
+        let source = store.findTile(from)?.tile
+        let fromName = source?.displayName ?? from
+        var msg = AgentMessage(from: from, fromName: fromName, text: text)
+        if source?.kind == .logs || source?.kind == .pr { msg.noReply = true }
         store.update(b.id) { bb in if let i = bb.links.firstIndex(where: { $0.id == link.id }) { bb.links[i].lastActivity = Date() } }
         if b.id == board.id { canvas.linksView.pulse(link: link, fromTile: from, text: text) }
         if target.state == .working || target.state == .waiting || surface(for: to) == nil {
@@ -771,7 +773,8 @@ final class CanvasController: NSObject {
     }
 
     static func format(_ m: AgentMessage) -> String {
-        "[Pitwall message from \"\(m.fromName)\" (tile \(m.from)); reply with the pitwall send_message tool] \(m.text)"
+        if m.noReply == true { return "[Pitwall message from \"\(m.fromName)\" (tile \(m.from))] \(m.text)" }
+        return "[Pitwall message from \"\(m.fromName)\" (tile \(m.from)); reply with the pitwall send_message tool] \(m.text)"
     }
 
     // MARK: Agent status
@@ -856,6 +859,7 @@ final class CanvasController: NSObject {
                 return Self.hookJSON(["hookSpecificOutput": ["hookEventName": "SessionStart", "additionalContext": ctx]])
             }
         case "UserPromptSubmit":
+            setWaitingOn(tileID, nil)
             let prompt = args["prompt"] ?? ""
             store.updateTile(tileID) { t in
                 if t.kind == .terminal { t.kind = .agent }
@@ -877,7 +881,10 @@ final class CanvasController: NSObject {
                               description: args["input.description"] ?? "Sub-agent", type: args["input.subagent_type"])
             }
             setState(tileID, .working, message: describe(tool: tool, args: args))
+            let bgShell = ["1", "true"].contains(args["input.run_in_background"] ?? "")
+            setWaitingOn(tileID, tool == "Bash" && !bgShell ? Self.blockingWait(args["input.command"] ?? "") : nil)
         case "PostToolUse":
+            setWaitingOn(tileID, nil)
             if tool == "Task" || tool == "Agent" {
                 let u = args["tool_use_id"]
                 let launched = u.map { backgroundToolUses.remove($0) != nil } ?? false
@@ -906,6 +913,7 @@ final class CanvasController: NSObject {
             }
             setState(tileID, .waiting, message: msg)
         case "Stop":
+            setWaitingOn(tileID, nil)
             if var queue = store.inbox[tileID], !queue.isEmpty {
                 let m = queue.removeFirst()
                 store.inbox[tileID] = queue.isEmpty ? nil : queue
@@ -1072,6 +1080,38 @@ final class CanvasController: NSObject {
         return b.tiles.first { kids.contains($0.id) && $0.kind == .subagent && $0.sessionID == toolUseID }?.id
     }
 
+    // MARK: Waiting on something external
+
+    private func setWaitingOn(_ tileID: String, _ label: String?) {
+        guard let t = store.findTile(tileID)?.tile, t.waitingOn != label else { return }
+        store.updateTile(tileID) {
+            $0.waitingOn = label
+            $0.waitingSince = label == nil ? nil : ($0.waitingSince ?? Date())
+        }
+        model?.objectWillChange.send()
+        reconcileIfCurrent(tileID)
+    }
+
+    /// What a shell command is blocked waiting on, if that's all it does:
+    /// CI runs, PR checks, rollouts, sleeps and poll loops.
+    static func blockingWait(_ command: String) -> String? {
+        let c = command
+        func first(_ pattern: String) -> String? {
+            guard let r = c.range(of: pattern, options: .regularExpression) else { return nil }
+            return String(c[r])
+        }
+        if c.contains("gh run watch") {
+            if let id = first(#"gh run watch\s+(\d+)"#)?.split(separator: " ").last { return "CI run \(id)" }
+            return "a CI run"
+        }
+        if c.range(of: #"gh pr checks\b.*--watch"#, options: .regularExpression) != nil { return "PR checks" }
+        if c.range(of: #"kubectl\b.*\brollout status"#, options: .regularExpression) != nil { return "a rollout" }
+        if c.range(of: #"kubectl\b.*\bwait\b"#, options: .regularExpression) != nil { return "Kubernetes" }
+        if c.range(of: #"\b(until|while)\b[\s\S]*\bsleep\b"#, options: .regularExpression) != nil { return "a poll loop" }
+        if let s = first(#"^\s*sleep\s+\d+"#), let n = Int(s.split(separator: " ").last ?? ""), n >= 20 { return "a \(n)s timer" }
+        return nil
+    }
+
     // MARK: Background work
 
     /// Re-reads what the agent has running in the background and stores it on
@@ -1088,6 +1128,9 @@ final class CanvasController: NSObject {
             let mine = Set(b.links.filter { $0.from == tileID && $0.kind == .spawned }.map(\.to))
             work += b.tiles.filter { mine.contains($0.id) && kids.contains($0.id) && $0.state == .working }
                 .map { $0.statusMessage ?? "Sub-agent" }
+            // Waits started with wait_for: the agent is woken when they end.
+            work += b.tiles.filter { mine.contains($0.id) && $0.waitLabel != nil && $0.state == .working }
+                .map { "waiting on " + ($0.waitLabel ?? "") }
         }
         let value: [String]? = work.isEmpty ? nil : work
         if t.background != value {

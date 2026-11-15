@@ -83,6 +83,14 @@ struct Tile: Codable, Identifiable, Equatable {
     /// Agents: work still running after the turn ended (background shell
     /// commands by name, background sub-agents by description).
     var background: [String]?
+    /// Agents: blocked in a foreground command that just waits on something
+    /// external (`gh run watch`, `kubectl rollout status`, a sleep loop).
+    var waitingOn: String?
+    var waitingSince: Date?
+    /// Wait tiles (kind .logs, made by `wait_for`): what is being waited on,
+    /// and what the agent planned to do next. The agent is woken when it ends.
+    var waitLabel: String?
+    var waitNote: String?
 
     var displayName: String {
         if let name, !name.isEmpty { return name }
@@ -105,6 +113,8 @@ struct Tile: Codable, Identifiable, Equatable {
     var isTerminalBacked: Bool { kind == .terminal || kind == .agent || kind == .logs }
     /// Between turns with background work still going: live, but not Working.
     var hasBackgroundWork: Bool { !(background ?? []).isEmpty && state != .working && state != .waiting }
+    /// Working, but only waiting on CI, a deploy or a timer.
+    var isWaitingExternally: Bool { state == .working && waitingOn != nil }
 }
 
 /// A connection between two tiles.
@@ -177,4 +187,6 @@ struct AgentMessage: Codable, Equatable {
     var fromName: String
     var text: String
     var at = Date()
+    /// From a watch, wait or PR tile: there's nobody to reply to.
+    var noReply: Bool?
 }

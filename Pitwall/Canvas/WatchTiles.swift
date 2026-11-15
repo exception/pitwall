@@ -29,6 +29,85 @@ extension CanvasController {
         return id
     }
 
+    // MARK: Waits
+
+    /// What `wait_for` waits on, as a command whose exit code is the result.
+    struct WaitSpec: Equatable {
+        var command: String
+        var label: String
+    }
+
+    /// A GitHub Actions run (id or URL), a PR's checks, or any command.
+    static func waitSpec(run: String?, pr: String?, command: String?) -> WaitSpec? {
+        if let run = run?.trimmingCharacters(in: .whitespaces), !run.isEmpty {
+            var repo: String?
+            var id = run
+            if let m = run.range(of: #"github\.com/([^/]+/[^/]+)/actions/runs/(\d+)"#, options: .regularExpression) {
+                let parts = run[m].split(separator: "/")
+                repo = parts[1] + "/" + parts[2]
+                id = String(parts[5])
+            }
+            guard id.allSatisfy(\.isNumber) else { return nil }
+            let r = repo.map { " -R " + shellQuote($0) } ?? ""
+            return WaitSpec(command: "gh run watch \(id)\(r) --exit-status --interval 30", label: "CI run \(id)")
+        }
+        if let pr = pr?.trimmingCharacters(in: .whitespaces), !pr.isEmpty {
+            let num = pr.split(separator: "/").last.map(String.init) ?? pr
+            return WaitSpec(command: "gh pr checks \(shellQuote(pr)) --watch --interval 30", label: "PR #\(num.trimmingCharacters(in: CharacterSet(charactersIn: "#"))) checks")
+        }
+        if let c = command?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty {
+            let one = c.replacingOccurrences(of: "\n", with: " ")
+            return WaitSpec(command: c, label: one.count > 40 ? String(one.prefix(38)) + "…" : one)
+        }
+        return nil
+    }
+
+    /// Starts a wait for an agent: a watch tile linked to it that wakes the
+    /// agent with the result when it finishes, pass or fail.
+    func newWait(_ spec: WaitSpec, note: String?, cwd: String?, from: String?) -> String {
+        let id = newWatch(command: spec.command, cwd: cwd, at: from.flatMap { near(agent: $0) }, from: from)
+        store.updateTile(id) {
+            $0.waitLabel = spec.label
+            $0.waitNote = note.flatMap { $0.isEmpty ? nil : $0 }
+            $0.autoName = "Waiting · " + spec.label
+            $0.statusMessage = "Waiting on " + spec.label
+        }
+        if let from { refreshBackground(from) }
+        reconcile()
+        return id
+    }
+
+    private func near(agent id: String) -> CGPoint? {
+        guard let f = board.tile(id) else { return nil }
+        return freeSpot(size: Self.defaultSize(.logs), near: CGPoint(x: f.frame.maxX + 44, y: f.frame.minY))
+    }
+
+    /// A wait ended: tell the agent how it went so it can carry on.
+    private func waitFinished(_ id: String, _ t: Tile, code: Int) {
+        let label = t.waitLabel ?? t.watchCommand ?? "the command"
+        let ok = code == 0
+        let took = Date().timeIntervalSince(t.stateSince)
+        let mins = took < 90 ? "\(Int(took))s" : "\(Int((took / 60).rounded()))m"
+        setState(id, ok ? .done : .error, message: (ok ? "Succeeded" : "Failed · exit \(code)") + " · \(mins)")
+        Timelines.shared.add(id, ok ? .done : .error, "\(label) \(ok ? "succeeded" : "failed (exit \(code))")")
+        guard let agent = agentTarget(for: id) else {
+            model?.toast(.init(kind: ok ? .info : .error, title: "\(label) \(ok ? "succeeded" : "failed")", body: "No agent was linked to wake up.", tileID: id))
+            return
+        }
+        let raw = t.sessionID.flatMap { Sessions.scrollback($0, bytes: 16_000) } ?? ""
+        let tail = Sessions.plain(raw).split(separator: "\n", omittingEmptySubsequences: true)
+            .filter { !$0.contains("watch-exit") }.suffix(ok ? 15 : 60).joined(separator: "\n")
+        var text = "Your wait on \(label) finished after \(mins): \(ok ? "SUCCESS" : "FAILED (exit \(code))").\n"
+        text += "Command: `\(t.watchCommand ?? "")`"
+        if !tail.isEmpty { text += "\nLast output:\n```\n\(tail)\n```" }
+        if let n = t.waitNote { text += "\nWhat you planned to do next: \(n)" }
+        addLink(from: agent, to: id, kind: .spawned) // no-op if already linked
+        if let err = sendMessage(from: id, to: agent, text: text) {
+            model?.toast(.init(kind: .error, title: "Couldn't wake the agent", body: err, tileID: id))
+        }
+        refreshBackground(agent)
+    }
+
     /// The command, then a report of its exit status back to Pitwall.
     static func watchScript(_ command: String) -> String {
         // A subshell, so `exit` in the command doesn't end the tile's shell.
@@ -39,6 +118,7 @@ extension CanvasController {
     func watchExited(_ id: String, code: Int) {
         guard let t = store.findTile(id)?.tile else { return }
         if t.keepAlive == true { serverExited(id, code: code); return }
+        if t.waitLabel != nil { waitFinished(id, t, code: code); return }
         if code == 0 {
             setState(id, .done, message: "Passed · exit 0")
         } else {
@@ -76,7 +156,8 @@ extension CanvasController {
     /// Called from the screen scanner with the tail of a watch tile's output.
     func watchScan(_ id: String, tail: String) {
         // Only while it runs: a finished command's exit code is authoritative.
-        guard let t = store.findTile(id)?.tile, t.kind == .logs, t.state == .working || watchFailingLine[id] != nil else { return }
+        guard let t = store.findTile(id)?.tile, t.kind == .logs, t.waitLabel == nil,
+              t.state == .working || watchFailingLine[id] != nil else { return }
         let lines = tail.split(separator: "\n", omittingEmptySubsequences: true).suffix(30).map(String.init)
         if t.keepAlive == true { detectServerURL(id, tail: tail) }
         var lastFail: (Int, String)?, lastOK: Int?

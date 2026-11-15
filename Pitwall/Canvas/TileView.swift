@@ -175,9 +175,12 @@ final class TileView: NSView {
         if let r = tile.diffRemoved, r > 0 { add("−\(r)", Theme.red) }
         if tile.hasBackgroundWork, let bg = tile.background {
             let names = bg.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-            add(bg.count == 1 ? "running \(names[0])" : "\(bg.count) in background" + (names.count == 1 ? " · \(names[0])" : ""), Theme.green)
+            let one = names[0].hasPrefix("waiting on ") ? names[0] : "running \(names[0])"
+            add(bg.count == 1 ? one : "\(bg.count) in background" + (names.count == 1 ? " · \(names[0])" : ""), Theme.green)
         }
-        if tile.kind != .terminal || tile.state != .idle {
+        if tile.isWaitingExternally, let w = tile.waitingOn {
+            add("waiting on \(w) · \((tile.waitingSince ?? tile.stateSince).elapsedShort)", Theme.green)
+        } else if tile.kind != .terminal || tile.state != .idle {
             if tile.state != .idle {
                 add("\(tile.state == .waiting ? "needs you" : tile.state.label.lowercased()) · \(tile.stateSince.elapsedShort)",
                     tile.state == .waiting ? Theme.amberText : Theme.text2)

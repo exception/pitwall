@@ -162,7 +162,7 @@ final class AppModel: ObservableObject {
             case .waiting: a.waiting += 1
             case .error: a.failing += 1
             case .done: a.done += 1
-            case .working: a.working += 1
+            case .working: if t.isWaitingExternally { a.background += 1 } else { a.working += 1 }
             case .idle: break
             }
             if t.hasBackgroundWork { a.background += 1 }

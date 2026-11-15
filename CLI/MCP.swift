@@ -38,6 +38,21 @@ final class MCPServer {
             args["command"] = a["command"] as? String ?? ""
             return try self.call("tile.watch", args: args)
         },
+        Tool(name: "wait_for",
+             description: "Wait for something slow without blocking: a GitHub Actions run, a pull request's CI checks, or any command that exits when the thing is done (a deploy, a rollout). Pitwall watches it in a tile linked to you and, when it finishes, sends you the result (success or failure, with the last output) as a new message. Call this, then END YOUR TURN. Prefer it over `gh run watch`, `gh pr checks --watch`, `kubectl rollout status`, sleep or polling loops.",
+             schema: ["type": "object", "properties": [
+                "run": ["type": "string", "description": "GitHub Actions run id or URL."],
+                "pr": ["type": "string", "description": "Pull request number or URL: waits for its checks."],
+                "command": ["type": "string", "description": "Any shell command that blocks until done; exit 0 means success."],
+                "then": ["type": "string", "description": "What you plan to do once it's done (sent back to you with the result)."],
+                "cwd": ["type": "string", "description": "Working directory (absolute). Defaults to this tile's directory."],
+             ]]) { a in
+            var args: [String: String] = ["cwd": a["cwd"] as? String ?? FileManager.default.currentDirectoryPath]
+            for k in ["run", "pr", "command", "then"] {
+                if let v = a[k] as? String { args[k] = v } else if let n = a[k] as? Int { args[k] = String(n) }
+            }
+            return try self.call("tile.wait", args: args)
+        },
         Tool(name: "search_terminals",
              description: "Search the output history of every terminal and agent on the user's canvas (all boards). Useful to find an error another tile printed, a URL, or what a command output earlier. Wrap in /slashes/ for a regex.",
              schema: ["type": "object", "properties": [
@@ -127,7 +142,7 @@ final class MCPServer {
                     "protocolVersion": (params["protocolVersion"] as? String) ?? "2025-06-18",
                     "capabilities": ["tools": [:]],
                     "serverInfo": ["name": "pitwall", "version": "0.1.0"],
-                    "instructions": "Pitwall is the infinite canvas this agent's terminal lives on. Use set_status to keep the user informed, open to show files or dev servers, open_terminal to start helpers, watch_command to run tests or builds you want the user to see, and follow_pr to track CI on your pull request.",
+                    "instructions": "Pitwall is the infinite canvas this agent's terminal lives on. Use set_status to keep the user informed, open to show files or dev servers, open_terminal to start helpers, watch_command to run tests or builds you want the user to see, and follow_pr to track CI on your pull request. To wait on CI, a deploy or a rollout, call wait_for and end your turn: Pitwall wakes you with the result, so never block on gh run watch, sleep or polling loops.",
                 ])
             case "ping":
                 respond(id, result: [:])
