@@ -16,7 +16,7 @@ final class CanvasController: NSObject {
     private var tickTimer: Timer?
     private var pollTimer: Timer?
     /// Tiles where Claude Code hooks are active (precise status available).
-    private var hookedTiles = Set<String>()
+    var hookedTiles = Set<String>()
 
     var board: Board { store.current }
 
@@ -168,6 +168,8 @@ final class CanvasController: NSObject {
             return d
         case .subagent:
             return SubagentTileContent()
+        case .pr:
+            return PRTileContent(tileID: t.id, repo: t.target ?? t.cwd ?? NSHomeDirectory(), ref: t.prRef, controller: self)
         case .compare:
             let c = CompareTileContent(tileIDs: (t.target ?? "").split(separator: ",").map(String.init))
             c.controller = self
@@ -194,6 +196,7 @@ final class CanvasController: NSObject {
         case .diff: return CGSize(width: 682, height: 638)
         case .subagent: return CGSize(width: 286, height: 110)
         case .compare: return CGSize(width: 726, height: 330)
+        case .pr: return CGSize(width: 528, height: 572)
         }
     }
 
@@ -325,6 +328,26 @@ final class CanvasController: NSObject {
         if let s = src { near = CGPoint(x: s.frame.maxX + 44, y: s.frame.minY) }
         let id = addTile(t, at: at ?? near.map { freeSpot(size: Self.defaultSize(.diff), near: $0) })
         if let s = src { addLink(from: s.id, to: id, kind: .spawned) }
+    }
+
+    /// Asks for a command, then opens a watch tile running it.
+    func promptWatch(at: CGPoint? = nil) {
+        prompt(title: "Watch a command", value: Self.suggestedWatch(in: defaultCwd), button: "Watch") { [weak self] cmd in
+            guard let self, !cmd.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+            self.newWatch(command: cmd, at: at)
+        }
+    }
+
+    /// A sensible default: the project's test script.
+    static func suggestedWatch(in dir: String) -> String {
+        let fm = FileManager.default
+        func has(_ f: String) -> Bool { fm.fileExists(atPath: (dir as NSString).appendingPathComponent(f)) }
+        if has("package.json") { return has("pnpm-lock.yaml") ? "pnpm test" : (has("bun.lockb") || has("bun.lock") ? "bun test" : "npm test") }
+        if has("Cargo.toml") { return "cargo test" }
+        if has("go.mod") { return "go test ./..." }
+        if has("pyproject.toml") || has("pytest.ini") { return "pytest" }
+        if has("Package.swift") { return "swift test" }
+        return ""
     }
 
     func newFrame(around ids: [String]? = nil) {
@@ -541,13 +564,13 @@ final class CanvasController: NSObject {
         }
     }
 
-    private func prompt(title: String, value: String, done: @escaping (String) -> Void) {
+    private func prompt(title: String, value: String, button: String = "Save", done: @escaping (String) -> Void) {
         let alert = NSAlert()
         alert.messageText = title
         let field = NSTextField(string: value)
         field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
         alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: button)
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         if let w = canvas.window {
@@ -568,6 +591,25 @@ final class CanvasController: NSObject {
         m.addItem(MenuAction("Put in a frame") { [weak self] in self?.newFrame(around: [id]) })
         if t.isTerminalBacked {
             m.addItem(MenuAction("Restart session") { [weak self] in self?.restartSession(id) })
+        }
+        if t.kind == .logs, t.watchCommand != nil {
+            m.addItem(MenuAction("Run again") { [weak self] in self?.rerunWatch(id) })
+        }
+        if t.kind == .logs || t.kind == .pr {
+            m.addItem(MenuAction(t.kind == .pr ? "Send failures to agent" : "Send output to agent") { [weak self] in
+                guard let self else { return }
+                if t.kind == .pr, let info = (self.tileView(id)?.content as? PRTileContent)?.info { self.sendPRFailures(id, info) }
+                else { self.sendFailure(id) }
+            })
+            let auto = MenuAction("Send failures automatically") { [weak self] in self?.toggleAutoSend(id) }
+            auto.state = t.autoSend == true ? .on : .off
+            m.addItem(auto)
+        }
+        if t.kind == .agent || t.kind == .diff {
+            m.addItem(MenuAction("Follow pull request") { [weak self] in
+                guard let self, let dir = t.worktree ?? t.target ?? t.cwd, let pr = self.newPR(repo: dir, from: id) else { return }
+                if t.kind == .agent { self.addLink(from: pr, to: id) }
+            })
         }
         if t.kind == .agent {
             m.addItem(MenuAction("Review with a new agent") { [weak self] in self?.startReview(of: id) })
@@ -599,6 +641,11 @@ final class CanvasController: NSObject {
         m.addItem(MenuAction("New terminal") { [weak self] in _ = self?.newTerminal(at: w) })
         m.addItem(MenuAction("New note") { [weak self] in self?.newNote(at: w) })
         m.addItem(MenuAction("New browser") { [weak self] in self?.open(target: "http://localhost:3000", at: w) })
+        m.addItem(MenuAction("Watch a command…") { [weak self] in self?.promptWatch(at: w) })
+        m.addItem(MenuAction("Follow pull request") { [weak self] in
+            guard let self else { return }
+            self.newPR(repo: self.board.root ?? self.defaultCwd, at: w)
+        })
         m.addItem(MenuAction("New frame") { [weak self] in self?.newFrame() })
         m.addItem(.separator())
         m.addItem(MenuAction("Tidy up") { [weak self] in self?.tidy() })
@@ -995,7 +1042,7 @@ final class CanvasController: NSObject {
                 setState(id, .working)
             }
         case .commandFinished(let code):
-            if !hooked, code > 0, store.findTile(id)?.tile.kind == .logs { setState(id, .error, message: "exit \(code)") }
+            if !hooked, code > 0, let t = store.findTile(id)?.tile, t.kind == .logs, t.watchCommand == nil { setState(id, .error, message: "exit \(code)") }
         case .exited:
             sessionEnded(id)
         case .focused:
@@ -1094,6 +1141,10 @@ final class CanvasController: NSObject {
         ("Allow command\\?|Approve this command|\\[y/N\\]|\\(y/n\\)", "Waiting for your approval"),
     ]
     private var screenWaiting = Set<String>()
+    /// Watch tiles: the failure line currently shown (so it isn't re-reported).
+    var watchFailingLine: [String: String] = [:]
+    /// PR tiles: comment ids already seen.
+    var prSeenComments: [String: Set<String>] = [:]
     private var scanInFlight = Set<String>()
 
     static let imagePattern = try! NSRegularExpression(
@@ -1103,6 +1154,7 @@ final class CanvasController: NSObject {
         for b in store.boards {
             for t in b.tiles where t.isTerminalBacked {
                 guard let sid = t.sessionID, byID[sid]?.alive == true, !scanInFlight.contains(t.id) else { continue }
+                let isWatch = t.kind == .logs
                 let watchPrompts = Prefs.shared.detectPrompts && t.kind == .agent && (t.state == .working || screenWaiting.contains(t.id))
                 let collectImages = Prefs.shared.imageGallery
                 scanInFlight.insert(t.id)
@@ -1125,9 +1177,11 @@ final class CanvasController: NSObject {
                         path = (path as NSString).expandingTildeInPath
                         if !known.contains(path), !found.contains(path), FileManager.default.fileExists(atPath: path) { found.append(path) }
                     }
+                    let watchTail = isWatch ? String(text.suffix(4000)) : nil
                     DispatchQueue.main.async {
                         guard let self else { return }
                         self.scanInFlight.remove(id)
+                        if let watchTail { self.watchScan(id, tail: watchTail) }
                         guard let cur = self.store.findTile(id)?.tile else { return }
                         if let prompt, cur.state != .waiting {
                             self.screenWaiting.insert(id)
@@ -1179,8 +1233,13 @@ final class CanvasController: NSObject {
 
     private func openPR(diffTile id: String) {
         guard let t = board.tile(id), let repo = t.target else { return }
-        let cmd = "git push -u origin HEAD && gh pr create --web --fill"
-        _ = newTerminal(cwd: repo, command: cmd, name: "Open PR")
+        let cmd = "git push -u origin HEAD && gh pr create --fill"
+        let term = newTerminal(cwd: repo, command: cmd, name: "Open PR")
+        addLink(from: id, to: term, kind: .spawned)
+        // Follow the PR once it exists; the tile retries until gh finds it.
+        if let pr = newPR(repo: repo, from: id), let agent = linkedTiles(of: id).first(where: { $0.1.kind == .agent })?.1.id {
+            addLink(from: pr, to: agent)
+        }
     }
 }
 

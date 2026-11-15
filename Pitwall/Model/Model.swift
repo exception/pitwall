@@ -30,7 +30,7 @@ enum AgentState: String, Codable, CaseIterable {
 }
 
 enum TileKind: String, Codable {
-    case terminal, agent, note, code, image, browser, diff, logs, subagent, compare
+    case terminal, agent, note, code, image, browser, diff, logs, subagent, compare, pr
 }
 
 /// A tile on a board. Frames are in world coordinates (points at 100% zoom).
@@ -69,6 +69,12 @@ struct Tile: Codable, Identifiable, Equatable {
     var model: String?
     /// Image files this tile's output mentioned (newest last), for the gallery.
     var images: [String]?
+    /// Watch tiles (kind .logs): the command being watched, as typed.
+    var watchCommand: String?
+    /// PR tiles: PR number/URL (nil = the current branch's PR); target is the repo.
+    var prRef: String?
+    /// Watch/PR tiles: send failures to the linked agent automatically.
+    var autoSend: Bool?
 
     var displayName: String {
         if let name, !name.isEmpty { return name }
@@ -77,6 +83,7 @@ struct Tile: Codable, Identifiable, Equatable {
         case .browser:
             guard let t = target, let u = URL(string: t), let h = u.host else { return "Browser" }
             return h + (u.port.map { ":\($0)" } ?? "")
+        case .pr: return prRef.map { "PR " + ($0.hasPrefix("http") ? "#" + ($0.split(separator: "/").last.map(String.init) ?? $0) : "#" + $0) } ?? "Pull request"
         case .note, .code, .image, .diff: return target.map { ($0 as NSString).lastPathComponent } ?? kind.rawValue.capitalized
         default:
             if let t = terminalTitle, !t.isEmpty { return t }

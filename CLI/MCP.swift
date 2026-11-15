@@ -28,6 +28,26 @@ final class MCPServer {
             if args["cwd"] == nil { args["cwd"] = FileManager.default.currentDirectoryPath }
             return try self.call("tile.new", args: args)
         },
+        Tool(name: "watch_command",
+             description: "Run a command (tests, a build, a deploy) in a watch tile linked to you. The tile turns red when the command fails, and the user can send the failure back to you.",
+             schema: ["type": "object", "properties": [
+                "command": ["type": "string", "description": "Shell command to run and watch."],
+                "cwd": ["type": "string", "description": "Working directory (absolute). Defaults to this tile's directory."],
+             ], "required": ["command"]]) { a in
+            var args: [String: String] = ["cwd": a["cwd"] as? String ?? FileManager.default.currentDirectoryPath]
+            args["command"] = a["command"] as? String ?? ""
+            return try self.call("tile.watch", args: args)
+        },
+        Tool(name: "follow_pr",
+             description: "Show a GitHub pull request as a tile linked to you, with live CI checks and review comments. Defaults to the PR for the current branch. Failures can be sent back to you.",
+             schema: ["type": "object", "properties": [
+                "pr": ["type": "string", "description": "PR number or URL. Omit for the current branch's PR."],
+                "cwd": ["type": "string", "description": "Repository directory (absolute). Defaults to this tile's directory."],
+             ]]) { a in
+            var args: [String: String] = ["cwd": a["cwd"] as? String ?? FileManager.default.currentDirectoryPath]
+            if let r = a["pr"] as? String { args["ref"] = r }
+            return try self.call("tile.pr", args: args)
+        },
         Tool(name: "open",
              description: "Open a file (markdown, code, image), a folder, or a URL (e.g. a localhost dev server) as a tile on the canvas.",
              schema: ["type": "object", "properties": [
@@ -100,7 +120,7 @@ final class MCPServer {
                     "protocolVersion": (params["protocolVersion"] as? String) ?? "2025-06-18",
                     "capabilities": ["tools": [:]],
                     "serverInfo": ["name": "pitwall", "version": "0.1.0"],
-                    "instructions": "Pitwall is the infinite canvas this agent's terminal lives on. Use set_status to keep the user informed, open to show files or dev servers, and open_terminal to start helpers.",
+                    "instructions": "Pitwall is the infinite canvas this agent's terminal lives on. Use set_status to keep the user informed, open to show files or dev servers, open_terminal to start helpers, watch_command to run tests or builds you want the user to see, and follow_pr to track CI on your pull request.",
                 ])
             case "ping":
                 respond(id, result: [:])

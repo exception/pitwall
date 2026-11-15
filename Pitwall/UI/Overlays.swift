@@ -501,7 +501,8 @@ struct PickerView: View {
         .init(kind: .note, name: "Note", glyph: "text.alignleft", key: "n"),
         .init(kind: .code, name: "File", glyph: "curlybraces", key: "f"),
         .init(kind: .diff, name: "Diff", glyph: "plusminus", key: "d"),
-        .init(kind: .logs, name: "Logs", glyph: "list.bullet.rectangle", key: "l"),
+        .init(kind: .logs, name: "Watch", glyph: "waveform.path.ecg", key: "w"),
+        .init(kind: .pr, name: "Pull request", glyph: "arrow.triangle.pull", key: "p"),
     ]
 
     var body: some View {

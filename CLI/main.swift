@@ -10,7 +10,11 @@ pitwall — control Pitwall from the terminal
   pitwall agent "<task>" [--cwd DIR] [--worktree] [--codex] [--count N]
                                             Start an agent tile on a task
   pitwall diff [DIR]                        Open a live diff tile for a git checkout
-  pitwall remote pair                       Print a one-time link to pair a phone
+  pitwall watch [--cwd DIR] [--auto-send] -- CMD...
+                                            Run CMD in a watch tile that turns red when it fails
+                                            (--auto-send: failures go to the calling agent)
+  pitwall pr [NUMBER|URL] [--cwd DIR]       Follow a pull request (default: this branch's PR)
+  pitwall remote pair                       (WIP) Print a one-time link to pair a phone
   pitwall link <tile> <tile> [--handoff]    Connect two tiles (--handoff: pass results downstream)
   pitwall open <path|url>                   Open a file, folder or URL as a tile
   pitwall tile close <id>                   Close a tile
@@ -227,6 +231,34 @@ case "agent":
     }
     a["task"] = task.joined(separator: " ")
     do { exit(Control.printResult(try Control.send("agent.new", args: a))) }
+    catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
+case "watch":
+    var a: [String: String] = ["cwd": FileManager.default.currentDirectoryPath]
+    var cmd: [String] = []
+    var i = 0, rawMode = false
+    while i < rest.count {
+        if rawMode { cmd.append(rest[i]) }
+        else if rest[i] == "--" { rawMode = true }
+        else if rest[i] == "--cwd" { i += 1; a["cwd"] = rest[safe: i] }
+        else if rest[i] == "--auto-send" { a["autosend"] = "1" }
+        else { cmd.append(rest[i]) }
+        i += 1
+    }
+    guard !cmd.isEmpty else { fputs("watch [--cwd DIR] -- CMD...\n", stderr); exit(2) }
+    a["command"] = cmd.joined(separator: " ")
+    do { exit(Control.printResult(try Control.send("tile.watch", args: a))) }
+    catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
+case "watch-exit":
+    _ = try? Control.send("watch.exit", args: ["code": rest.first ?? "1"], timeout: 5)
+    exit(0)
+case "pr":
+    var a: [String: String] = ["cwd": FileManager.default.currentDirectoryPath]
+    var i = 0
+    while i < rest.count {
+        if rest[i] == "--cwd" { i += 1; a["cwd"] = rest[safe: i] } else { a["ref"] = rest[i] }
+        i += 1
+    }
+    do { exit(Control.printResult(try Control.send("tile.pr", args: a))) }
     catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
 case "diff":
     let dir = rest.first.map { URL(fileURLWithPath: $0).standardizedFileURL.path } ?? FileManager.default.currentDirectoryPath

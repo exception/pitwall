@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         control.controller = main.controller
         control.start()
         RemoteServer.shared.controller = main.controller
-        if Prefs.shared.remoteEnabled || ProcessInfo.processInfo.environment["PITWALL_REMOTE"] == "1" { RemoteServer.shared.start() }
+        if Prefs.remoteAvailable { RemoteServer.shared.start() }
         NSApp.mainMenu = buildMenu()
         main.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)

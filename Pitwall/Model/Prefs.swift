@@ -40,10 +40,13 @@ final class Prefs: ObservableObject {
     @Published var imageGallery: Bool { didSet { d.set(imageGallery, forKey: "imageGallery") } }
 
     // MARK: Remote
+    /// Pitwall Remote is a work in progress: off unless PITWALL_REMOTE=1.
+    static let remoteAvailable = ProcessInfo.processInfo.environment["PITWALL_REMOTE"] == "1"
+
     @Published var remoteEnabled: Bool {
         didSet {
             d.set(remoteEnabled, forKey: "remoteEnabled")
-            if remoteEnabled { RemoteServer.shared.start() } else { RemoteServer.shared.stop() }
+            if remoteEnabled && Prefs.remoteAvailable { RemoteServer.shared.start() } else { RemoteServer.shared.stop() }
         }
     }
 

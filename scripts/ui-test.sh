@@ -126,7 +126,28 @@ scenario_handoff() {
   stop_app
 }
 
-if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals handoff); fi
+scenario_watch() {
+  echo "watch: commands and PRs turn red on failure and report to the agent"
+  reset; start_app
+  local ok=$($H watch --cwd $PWD -- 'echo all good'); local bad=$($H watch --cwd $PWD -- 'echo boom; exit 3')
+  local live=$($H watch --cwd $PWD -- 'sleep 1; echo "src/a.ts(3,1): error TS2322: Type string is not number"; sleep 60')
+  sleep 7
+  check "passing command is done" '[[ $(tile_field $ok state) == done ]]'
+  check "failing command is error with exit code" '[[ $(tile_field $bad state) == error && $(tile_field $bad message) == *"exit 3"* ]]'
+  check "failure pattern detected while running" '[[ $(tile_field $live state) == error && $(tile_field $live message) == *TS2322* ]]'
+  # An idle agent with --auto-send gets the failure typed in.
+  local A=$($H tile new --cwd $PWD --title "Agent"); sleep 1.5
+  echo '{"last_assistant_message":"ready"}' | PITWALL_TILE_ID=$A $H hook Stop
+  local W=$(PITWALL_TILE_ID=$A $H watch --auto-send -- 'echo "FAIL src/login.test.ts"; exit 1'); sleep 4
+  check "failure sent to linked agent" '$H tile read $A --bytes 6000 | grep -q "is failing"'
+  local P=$($H pr https://github.com/cli/cli/pull/15052 --cwd $PWD); sleep 8
+  shot watch
+  check "PR tile loaded from gh" '[[ $(tile_field $P name) == "#15052"* ]]'
+  check "PR with failing checks is error" '[[ $(tile_field $P state) == error && $(tile_field $P message) == *failing* ]]'
+  stop_app
+}
+
+if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals handoff watch); fi
 for s in $scenarios; do scenario_$s; done
 reset
 echo; [[ $FAILED == 0 ]] && echo "All UI scenarios passed. Screenshots: $OUT/" || { echo "Some UI scenarios FAILED. See $OUT/"; exit 1; }

@@ -138,8 +138,8 @@ final class AppModel: ObservableObject {
         case .code:
             chooseFile { url in ctl.open(target: url.path, at: p.world) }
         case .diff: ctl.newDiff(at: p.world)
-        case .logs:
-            _ = ctl.newTerminal(at: p.world, name: "Logs", kind: .logs)
+        case .logs: ctl.promptWatch(at: p.world)
+        case .pr: ctl.newPR(repo: board.root ?? ctl.defaultCwd, at: p.world)
         default: break
         }
     }

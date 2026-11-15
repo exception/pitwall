@@ -490,6 +490,21 @@ private struct RemoteSettings: View {
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        if Prefs.remoteAvailable { content } else { wip }
+    }
+
+    private var wip: some View {
+        Card {
+            Row("Pitwall Remote", "Coming soon: see your agents and approve their requests from your iPhone, end-to-end encrypted.",
+                symbol: "iphone.radiowaves.left.and.right") {
+                Text("Work in progress").font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+            }
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 18) {
             Card {
                 Row("Pitwall Remote", "See your agents and answer them from your phone. Everything between your phone and this Mac is end-to-end encrypted.",

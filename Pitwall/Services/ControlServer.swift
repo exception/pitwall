@@ -83,6 +83,8 @@ final class ControlServer {
         if let v = t.statusMessage { o["message"] = .string(v) }
         if let v = t.target { o["target"] = .string(v) }
         if let v = t.task { o["task"] = .string(String(v.prefix(300))) }
+        if let v = t.watchCommand { o["command"] = .string(v) }
+        if let v = t.prRef { o["pr"] = .string(v) }
         return .object(o)
     }
 
@@ -135,7 +137,7 @@ final class ControlServer {
             return ok(.string(store.current.tiles.first { !before.contains($0.id) }?.id ?? ""))
 
         case "remote.pair":
-            guard RemoteServer.shared.running else { return fail("Pitwall Remote is off. Turn it on in Settings › Pitwall Remote.") }
+            guard RemoteServer.shared.running else { return fail("Pitwall Remote is a work in progress and is disabled in this build.") }
             guard let url = RemoteServer.shared.pairingURL() else { return fail("No network address found") }
             return ok(.string(url.absoluteString))
 
@@ -148,6 +150,24 @@ final class ControlServer {
                 ctl.toggleHandoff(l.id)
             }
             return ok()
+
+        case "tile.watch":
+            guard let cmd = args["command"], !cmd.isEmpty else { return fail("command required") }
+            ensureBoard(of: from)
+            let id = ctl.newWatch(command: cmd, cwd: args["cwd"], at: near(from), from: from, autoSend: args["autosend"] == "1")
+            return ok(.string(id))
+
+        case "watch.exit":
+            guard let id = req.tileID ?? from, store.findTile(id) != nil else { return ok() }
+            ctl.watchExited(id, code: Int(args["code"] ?? "") ?? 1)
+            return ok()
+
+        case "tile.pr":
+            ensureBoard(of: from)
+            let repo = args["cwd"] ?? from.flatMap { store.findTile($0)?.tile.cwd } ?? ctl.defaultCwd
+            guard let id = ctl.newPR(repo: repo, ref: args["ref"].flatMap { $0.isEmpty ? nil : $0 }, from: from) else { return fail("not a git repository: \(repo)") }
+            if let from, store.findTile(from)?.tile.kind == .agent { ctl.addLink(from: id, to: from) }
+            return ok(.string(id))
 
         case "tile.open":
             guard let target = args["target"], !target.isEmpty else { return fail("target required") }
