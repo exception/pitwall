@@ -24,6 +24,9 @@ pitwall — control Pitwall from the terminal
   pitwall tile close <id>                   Close a tile
   pitwall tile focus <id>                   Fly the canvas to a tile
   pitwall tile move <id> <x> <y>            Move a tile (canvas points)
+  pitwall tile key <id> <key>...            Press keys in a terminal (up, down, return, escape…)
+  pitwall view <x> <y> <zoom>               Move the canvas (world point at top-left)
+  pitwall board new <name> [--root DIR] | board switch <name>
   pitwall frame new [--title T] [TILE...]   Put tiles in a new frame
   pitwall frame list | collapse <id> | expand <id>
   pitwall tile read <id> [--bytes N]        Print a tile's recent terminal output
@@ -92,6 +95,9 @@ func runTile(_ args: [String]) -> Int32 {
         case "close", "rm":
             guard let id = rest.first else { fputs("tile close <id>\n", stderr); return 2 }
             return Control.printResult(try Control.send("tile.close", tile: id))
+        case "key":
+            guard rest.count >= 2 else { fputs("tile key <id> <key>... (up down left right return escape tab space)\n", stderr); return 2 }
+            return Control.printResult(try Control.send("tile.key", tile: rest[0], args: ["keys": rest.dropFirst().joined(separator: " ")]))
         case "move":
             guard rest.count >= 3 else { fputs("tile move <id> <x> <y>\n", stderr); return 2 }
             return Control.printResult(try Control.send("tile.move", tile: rest[0], args: ["x": rest[1], "y": rest[2]]))
@@ -261,6 +267,16 @@ case "watch", "server":
     a["command"] = cmd.joined(separator: " ")
     do { exit(Control.printResult(try Control.send(isServer ? "tile.server" : "tile.watch", args: a))) }
     catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
+case "view":
+    guard rest.count == 3 else { fputs("view <x> <y> <zoom>   (world point at the top-left, zoom 0.1–2)\n", stderr); exit(2) }
+    do { exit(Control.printResult(try Control.send("view", args: ["x": rest[0], "y": rest[1], "zoom": rest[2]]))) }
+    catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
+case "board":
+    guard let sub = rest.first, let name = rest[safe: 1] else { fputs("board new <name> [--root DIR] | board switch <name>\n", stderr); exit(2) }
+    var a = ["name": name]
+    if let i = rest.firstIndex(of: "--root"), let r = rest[safe: i + 1] { a["root"] = URL(fileURLWithPath: r).standardizedFileURL.path }
+    do { exit(Control.printResult(try Control.send(sub == "new" ? "board.new" : "board.switch", args: a))) }
+    catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "frame":
     guard let sub = rest.first else { fputs("frame new|list|collapse|expand\n", stderr); exit(2) }
     do {

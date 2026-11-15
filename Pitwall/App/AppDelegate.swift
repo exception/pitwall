@@ -17,7 +17,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         app.run()
     }
 
+    /// Running as the unit-test host: start nothing (no sockets, no
+    /// daemon, no boards) so tests can't disturb a real Pitwall.
+    static let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        || NSClassFromString("XCTestCase") != nil
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if Self.isTestHost { return }
+        // One Pitwall per home: if another is already serving, hand over to it.
+        if ControlServer.anotherInstanceIsRunning() {
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+                .filter { $0.processIdentifier != getpid() }
+            others.first?.activate()
+            NSApp.terminate(nil)
+            return
+        }
         PitwallPaths.ensure()
         // SIGTERM/SIGINT (logout, kill, crash reporters): save and quit cleanly.
         for sig in [SIGTERM, SIGINT] {
@@ -58,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if Self.isTestHost || main == nil { return }
         Store.shared.saveNow()
         control.stop()
     }

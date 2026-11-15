@@ -85,4 +85,11 @@ final class PitwallTests: XCTestCase {
         XCTAssertFalse(fails("Compiled successfully in 1.2s"))
         XCTAssertFalse(fails("GET /api/errors-page 200"))
     }
+
+    func testAgentProcessNames() {
+        XCTAssertTrue(CanvasController.isAgentProcess("claude"))
+        XCTAssertTrue(CanvasController.isAgentProcess("2.1.325"))
+        XCTAssertFalse(CanvasController.isAgentProcess("zsh"))
+        XCTAssertFalse(CanvasController.isAgentProcess("node"))
+    }
 }

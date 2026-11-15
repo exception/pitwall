@@ -49,6 +49,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.canvas.grid.needsDisplay = true
                 self.controller.layoutAll(live: false)
                 self.controller.reconcile()
+                self.controller.refreshTileChrome()
             }
         }.store(in: &bag)
         model.$sidebarVisible.dropFirst().sink { [weak self] v in

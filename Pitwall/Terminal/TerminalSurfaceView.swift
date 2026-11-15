@@ -178,6 +178,22 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
         _ = ghostty_surface_key(surface, ev)
     }
 
+    /// Presses a non-text key (arrows, escape, tab, return) as a real key event.
+    static let namedKeys: [String: UInt32] = ["return": 0x24, "enter": 0x24, "escape": 0x35, "esc": 0x35, "tab": 0x30,
+                                              "up": 0x7E, "down": 0x7D, "left": 0x7B, "right": 0x7C, "space": 0x31]
+    func press(key name: String) -> Bool {
+        guard let surface, let code = Self.namedKeys[name.lowercased()] else { return false }
+        var ev = ghostty_input_key_s()
+        ev.action = GHOSTTY_ACTION_PRESS
+        ev.keycode = code
+        ev.mods = GHOSTTY_MODS_NONE
+        ev.consumed_mods = GHOSTTY_MODS_NONE
+        _ = ghostty_surface_key(surface, ev)
+        ev.action = GHOSTTY_ACTION_RELEASE
+        _ = ghostty_surface_key(surface, ev)
+        return true
+    }
+
     func readVisibleText() -> String? {
         guard let surface else { return nil }
         var sel = ghostty_selection_s()

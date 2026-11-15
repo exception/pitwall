@@ -28,6 +28,8 @@ final class Prefs: ObservableObject {
     /// Below this zoom, agent tiles turn into status cards.
     @Published var cardZoom: Double { didSet { d.set(cardZoom, forKey: "cardZoom") } }
     @Published var showSubagents: Bool { didSet { d.set(showSubagents, forKey: "showSubagents") } }
+    /// Show what agents have spent ($) on tiles and the board pill.
+    @Published var showCost: Bool { didSet { d.set(showCost, forKey: "showCost") } }
 
     // MARK: Notifications
     @Published var toasts: Bool { didSet { d.set(toasts, forKey: "toasts") } }
@@ -69,6 +71,7 @@ final class Prefs: ObservableObject {
         snapToGrid = b("snapToGrid", true)
         cardZoom = d.object(forKey: "cardZoom") as? Double ?? 0.5
         showSubagents = b("showSubagents", true)
+        showCost = b("showCost", true)
         toasts = b("toasts", true)
         systemNotifications = b("systemNotifications", true)
         dockBadge = b("dockBadge", true)

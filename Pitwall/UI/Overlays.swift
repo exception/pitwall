@@ -167,6 +167,7 @@ struct SidebarToggle: View {
 // MARK: - Toolbar
 
 struct ToolbarPill: View {
+    @ObservedObject var prefs = Prefs.shared
     @ObservedObject var model: AppModel
 
     var body: some View {
@@ -178,7 +179,7 @@ struct ToolbarPill: View {
             Text(model.board.name).fontWeight(.semibold)
             let agents = model.board.tiles.filter { $0.kind == .agent }.count
             if agents > 0 { Text("· \(agents) agent\(agents == 1 ? "" : "s")").foregroundStyle(.secondary) }
-            if model.boardCost >= 0.01 { Text("· " + String(format: "$%.2f", model.boardCost)).foregroundStyle(.secondary).monospacedDigit() }
+            if Prefs.shared.showCost && model.boardCost >= 0.01 { Text("· " + String(format: "$%.2f", model.boardCost)).foregroundStyle(.secondary).monospacedDigit() }
         }
         .padding(.horizontal, 16)
         .frame(height: 40)

@@ -214,6 +214,8 @@ struct SettingsView: View {
                 Row("Image gallery", "Collect images agents mention into a gallery on the tile.") { Toggle("", isOn: $prefs.imageGallery).labelsHidden().toggleStyle(.switch) }
                 Divider()
                 Row("Sub-agent tiles", "Show Claude's sub-agents as small linked tiles.") { Toggle("", isOn: $prefs.showSubagents).labelsHidden().toggleStyle(.switch) }
+                Divider()
+                Row("Show spend", "What each agent has cost so far, on its tile and in the board's total.") { Toggle("", isOn: $prefs.showCost).labelsHidden().toggleStyle(.switch) }
             }
         }
     }

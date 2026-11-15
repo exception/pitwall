@@ -7,7 +7,42 @@ final class ControlServer {
     private var fd: Int32 = -1
     private var socketInode: ino_t = 0
 
+    /// True if a live Pitwall answers on the app socket.
+    static func anotherInstanceIsRunning() -> Bool {
+        let path = PitwallPaths.appSocket.path
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        let res = try? UnixSocket.roundTrip(path, ControlRequest(cmd: "app.ping", tileID: nil, boardID: nil, args: nil),
+                                            as: ControlResponse.self, timeout: 1.5)
+        return res?.ok == true
+    }
+
+    private var watchdog: Timer?
+
     func start() {
+        listen()
+        // If the socket file disappears or goes dead (e.g. removed by another
+        // process), take it back so hooks keep reaching this app.
+        watchdog = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            var st = stat()
+            let path = PitwallPaths.appSocket.path
+            let ours = stat(path, &st) == 0 && st.st_ino == self.socketInode
+            if ours { return }
+            DispatchQueue.global().async {
+                if Self.anotherInstanceIsRunning() { return }
+                DispatchQueue.main.async { NSLog("pitwall: control socket lost; re-listening"); self.relisten() }
+            }
+        }
+    }
+
+    private func relisten() {
+        source?.cancel()
+        source = nil
+        if fd >= 0 { close(fd); fd = -1 }
+        listen()
+    }
+
+    private func listen() {
         PitwallPaths.ensure()
         do { fd = try UnixSocket.listen(PitwallPaths.appSocket.path) } catch {
             NSLog("pitwall: control socket failed: \(error)")
@@ -29,6 +64,7 @@ final class ControlServer {
     }
 
     func stop() {
+        watchdog?.invalidate()
         source?.cancel()
         if fd >= 0 { close(fd) }
         // Only remove the socket if it's still ours (a newer instance may
@@ -44,7 +80,9 @@ final class ControlServer {
         guard let (line, _) = UnixSocket.readLine(c),
               let req = try? Wire.decoder.decode(ControlRequest.self, from: line) else { return }
         var res = ControlResponse(ok: false, error: "app not ready")
-        if req.cmd == "agent.permission" {
+        if req.cmd == "app.ping" {
+            res = ok(.string(String(getpid())))
+        } else if req.cmd == "agent.permission" {
             res = handlePermission(req)
         } else if req.cmd == "search" {
             var tiles: [(Board, Tile)] = []
@@ -177,6 +215,24 @@ final class ControlServer {
             ensureBoard(of: from)
             return ok(.string(ctl.newServer(command: cmd, cwd: args["cwd"], at: near(from), from: from)))
 
+        case "view":
+            guard let x = Double(args["x"] ?? ""), let y = Double(args["y"] ?? ""), let z = Double(args["zoom"] ?? "") else { return fail("view <x> <y> <zoom>") }
+            ctl.canvas.animate(to: Viewport(origin: CGPoint(x: x, y: y), zoom: CGFloat(z)))
+            return ok()
+
+        case "board.new":
+            guard let name = args["name"], !name.isEmpty else { return fail("name required") }
+            let b = store.addBoard(name: name, root: args["root"])
+            ctl.switchBoard(b.id)
+            return ok(.string(b.id))
+
+        case "board.switch":
+            guard let q = args["name"], let b = store.boards.first(where: { $0.id == q || $0.name.caseInsensitiveCompare(q) == .orderedSame }) else {
+                return fail("no such board")
+            }
+            ctl.switchBoard(b.id)
+            return ok(.string(b.id))
+
         case "frame.new":
             let ids = (args["tiles"] ?? "").split(separator: ",").map(String.init).filter { store.findTile($0) != nil }
             let before = Set(ctl.board.frames.map(\.id))
@@ -264,6 +320,13 @@ final class ControlServer {
             let parts = text.components(separatedBy: "\n")
             for (i, part) in parts.enumerated() {
                 if i < parts.count - 1 { s.submit(part) } else if !part.isEmpty { s.sendText(part) }
+            }
+            return ok()
+
+        case "tile.key":
+            guard let id = req.tileID, let s = ctl.surface(for: id) else { return fail("no live terminal with that id on this board") }
+            for k in (args["keys"] ?? "").split(separator: " ") {
+                guard s.press(key: String(k)) else { return fail("unknown key \(k); use up/down/left/right/return/escape/tab/space") }
             }
             return ok()
 

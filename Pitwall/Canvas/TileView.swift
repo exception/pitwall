@@ -166,7 +166,7 @@ final class TileView: NSView {
             if s.length > 0 { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
             s.append(NSAttributedString(string: t, attributes: [.font: font, .foregroundColor: c]))
         }
-        if let c = tile.costUSD, c >= 0.01 { add(String(format: "$%.2f", c), Theme.text3) }
+        if Prefs.shared.showCost, let c = tile.costUSD, c >= 0.01 { add(String(format: "$%.2f", c), Theme.text3) }
         if let a = tile.diffAdded, a > 0 { add("+\(a)", Theme.green) }
         if let r = tile.diffRemoved, r > 0 { add("−\(r)", Theme.red) }
         if tile.kind != .terminal || tile.state != .idle {
@@ -513,6 +513,9 @@ final class StatusCardView: NSView {
     private let summary = NSTextField(wrappingLabelWithString: "")
     private let footer = NSTextField(labelWithString: "")
     private let chip = NSTextField(labelWithString: "")
+    /// The chip's pill. A label's text sits at the top of its frame, so the
+    /// pill is its own layer and the label is centered inside it.
+    private let chipPill = CALayer()
     private var state: AgentState = .idle
 
     override var isFlipped: Bool { true }
@@ -530,8 +533,8 @@ final class StatusCardView: NSView {
         footer.lineBreakMode = .byTruncatingTail
         chip.font = .systemFont(ofSize: 11, weight: .semibold)
         chip.alignment = .center
-        chip.wantsLayer = true
-        chip.layer?.cornerRadius = 10
+        chipPill.cornerRadius = 10
+        layer?.addSublayer(chipPill)
         [name, summary, footer, chip].forEach(addSubview)
     }
 
@@ -547,7 +550,7 @@ final class StatusCardView: NSView {
         if let a = tile.diffAdded, a > 0 { f.append("+\(a)") }
         if let r = tile.diffRemoved, r > 0 { f.append("−\(r)") }
         footer.stringValue = f.joined(separator: "  ")
-        chip.stringValue = tile.state == .idle ? "" : "  \(tile.state.label) · \(tile.stateSince.elapsedShort)  "
+        chip.stringValue = tile.state == .idle ? "" : "\(tile.state.label) · \(tile.stateSince.elapsedShort)"
         updateColors()
         needsLayout = true
     }
@@ -564,7 +567,7 @@ final class StatusCardView: NSView {
             summary.textColor = Theme.text2
             footer.textColor = Theme.text3
             chip.textColor = state == .waiting ? Theme.amberText : Theme.color(for: state)
-            chip.layer?.backgroundColor = Theme.color(for: state).withAlphaComponent(0.14).cgColor
+            chipPill.backgroundColor = Theme.color(for: state).withAlphaComponent(0.14).cgColor
         }
     }
 
@@ -575,8 +578,14 @@ final class StatusCardView: NSView {
         dot.frame = CGRect(x: pad, y: pad + 6, width: 10, height: 10)
         dot.cornerRadius = 5
         name.frame = NSRect(x: pad + 18, y: pad, width: b.width - pad * 2 - 18, height: 22)
-        let chipW = chip.stringValue.isEmpty ? 0 : chip.intrinsicContentSize.width
-        chip.frame = NSRect(x: b.width - pad - chipW, y: b.height - pad - 20, width: chipW, height: 20)
+        let textSize = chip.intrinsicContentSize
+        let chipW = chip.stringValue.isEmpty ? 0 : textSize.width + 18
+        let pill = CGRect(x: b.width - pad - chipW, y: b.height - pad - 20, width: chipW, height: 20)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        chipPill.frame = pill
+        chipPill.isHidden = chipW == 0 || b.height <= 70
+        CATransaction.commit()
+        chip.frame = NSRect(x: pill.minX, y: pill.midY - textSize.height / 2, width: chipW, height: textSize.height)
         footer.frame = NSRect(x: pad, y: b.height - pad - 18, width: max(0, b.width - pad * 3 - chipW), height: 18)
         summary.frame = NSRect(x: pad, y: pad + 30, width: b.width - pad * 2, height: max(0, b.height - pad * 2 - 30 - 26))
         let show = b.height > 70

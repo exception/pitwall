@@ -122,6 +122,9 @@ final class CanvasController: NSObject {
 
     func tileView(_ id: String) -> TileView? { tileViews[id] }
 
+    /// Re-renders tile headers after a preference that affects them changes.
+    func refreshTileChrome() { tileViews.values.forEach { $0.tick() } }
+
     func tileID(at viewPoint: CGPoint) -> String? {
         board.tiles.sorted { $0.z > $1.z }.first { !isCollapsedAway($0, in: board) && canvas.toView($0.frame).contains(viewPoint) }?.id
     }
@@ -761,6 +764,8 @@ final class CanvasController: NSObject {
             if let message { $0.statusMessage = message }
         }
         if changed && s == .waiting { notifyAttention(id) }
+        // It no longer needs you: drop its "needs you" toasts.
+        if changed && t.state == .waiting && s != .waiting { model?.toasts.removeAll { $0.tileID == id && $0.kind == .attention } }
         if changed { model?.objectWillChange.send(); updateAttentionBadge() }
         if store.currentBoardID == store.findTile(id)?.board.id { reconcile() }
     }
@@ -1147,6 +1152,13 @@ final class CanvasController: NSObject {
 
     // MARK: Polling: git + foreground process
 
+    /// Agent CLIs by process name. Claude Code's native build runs as its
+    /// version number (e.g. "2.1.325").
+    static func isAgentProcess(_ name: String) -> Bool {
+        if ["claude", "codex", "gemini", "aider", "opencode", "amp"].contains(name) { return true }
+        return name.range(of: "^\\d+\\.\\d+\\.\\d+$", options: .regularExpression) != nil
+    }
+
     private func poll() {
         let infos = Sessions.list()
         var byID: [String: SessionInfo] = [:]
@@ -1155,14 +1167,18 @@ final class CanvasController: NSObject {
             for t in b.tiles where t.isTerminalBacked {
                 guard let sid = t.sessionID, let info = byID[sid] else { continue }
                 let fg = info.foregroundName ?? ""
-                let isAgent = ["claude", "codex", "gemini", "aider", "opencode", "amp"].contains(fg)
+                let isAgent = Self.isAgentProcess(fg)
+                if isAgent { agentSeen.insert(t.id) }
                 if isAgent && t.kind == .terminal {
-                    store.updateTile(t.id) { $0.kind = .agent; if $0.autoName == nil { $0.autoName = fg.capitalized } }
+                    store.updateTile(t.id) { $0.kind = .agent; if $0.autoName == nil { $0.autoName = fg.first?.isNumber == true ? "Claude" : fg.capitalized } }
                 }
                 if let cwd = info.foregroundCwd, cwd != t.cwd { store.updateTile(t.id) { $0.cwd = cwd } }
                 // The agent quit back to the shell: it is no longer working.
                 let shells: Set<String> = ["zsh", "bash", "fish", "sh", "nu", "login"]
-                if t.kind == .agent, shells.contains(fg), t.state == .working || t.state == .waiting {
+                // Only once we've seen it running: right after launch the shell
+                // is still in front while the agent starts up.
+                if t.kind == .agent, shells.contains(fg), agentSeen.contains(t.id), t.state == .working || t.state == .waiting {
+                    agentSeen.remove(t.id)
                     setState(t.id, .idle, message: "Agent exited")
                 }
             }
@@ -1190,6 +1206,8 @@ final class CanvasController: NSObject {
     /// Dev servers: recent automatic restarts (for crash-loop backoff).
     var serverRestarts: [String: [Date]] = [:]
     /// Where the next new tile goes (set by "New agent here" and the canvas menu).
+    /// Agent tiles whose agent process we've seen in the foreground.
+    var agentSeen = Set<String>()
     var pendingPlacement: (point: CGPoint?, frameID: String?, expires: Date)?
     private var scanInFlight = Set<String>()
 
