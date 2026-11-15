@@ -512,27 +512,42 @@ final class TileView: NSView {
     @objc private func timelineClicked() {
         if let p = timelinePopover, p.isShown { p.close(); return }
         guard let window, let content = window.contentView else { return }
-        // Open toward whichever side of the button has room, sized to fit it.
-        let anchor = timelineButton.convert(timelineButton.bounds, to: content)
-        let below = anchor.minY - content.bounds.minY
-        let above = content.bounds.maxY - anchor.maxY
+        // Measure free space on screen (non-flipped, below the menu bar).
+        let inWindow = timelineButton.convert(timelineButton.bounds, to: nil)
+        let onScreen = window.convertToScreen(inWindow)
+        let visible = window.screen.map { $0.visibleFrame.intersection(window.frame) } ?? window.frame
+        let below = onScreen.minY - visible.minY
+        let above = visible.maxY - onScreen.maxY
         let downward = below >= 300 || below >= above
         let height = min(420, max(160, (downward ? below : above) - 40))
         let pop = NSPopover()
         pop.behavior = .transient
         pop.animates = false
         pop.contentViewController = NSHostingController(rootView: TimelineView_(tileID: tile.id, height: height))
-        // The header is flipped: maxY is its visual bottom.
-        pop.show(relativeTo: timelineButton.bounds, of: timelineButton, preferredEdge: downward ? .maxY : .minY)
+        // Anchor to the window's content view: NSPopover reads edges in the
+        // positioning view's own coordinates, and the tile header is flipped.
+        timelineDownward = downward
+        pop.show(relativeTo: timelineAnchor(in: content), of: content, preferredEdge: timelineEdge(in: content))
         timelinePopover = pop
+    }
+
+    private var timelineDownward = true
+
+    private func timelineAnchor(in content: NSView) -> NSRect {
+        timelineButton.convert(timelineButton.bounds, to: content)
+    }
+
+    private func timelineEdge(in content: NSView) -> NSRectEdge {
+        // "Below" is maxY in a flipped view, minY otherwise.
+        timelineDownward == content.isFlipped ? .maxY : .minY
     }
 
     /// Keeps an open timeline attached to its button when the tile moves
     /// (panning, flying to the tile, entering full screen).
     private func repositionPopovers() {
         guard let pop = timelinePopover, pop.isShown else { return }
-        if window == nil { pop.close(); return }
-        pop.positioningRect = timelineButton.bounds
+        guard let content = window?.contentView else { pop.close(); return }
+        pop.positioningRect = timelineAnchor(in: content)
     }
 
     override var frame: NSRect {
