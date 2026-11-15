@@ -38,6 +38,7 @@ extension CanvasController {
     /// The watched command finished.
     func watchExited(_ id: String, code: Int) {
         guard let t = store.findTile(id)?.tile else { return }
+        if t.keepAlive == true { serverExited(id, code: code); return }
         if code == 0 {
             setState(id, .done, message: "Passed · exit 0")
         } else {
@@ -77,6 +78,7 @@ extension CanvasController {
         // Only while it runs: a finished command's exit code is authoritative.
         guard let t = store.findTile(id)?.tile, t.kind == .logs, t.state == .working || watchFailingLine[id] != nil else { return }
         let lines = tail.split(separator: "\n", omittingEmptySubsequences: true).suffix(30).map(String.init)
+        if t.keepAlive == true { detectServerURL(id, tail: tail) }
         var lastFail: (Int, String)?, lastOK: Int?
         for (i, l) in lines.enumerated() {
             let r = NSRange(l.startIndex..., in: l)

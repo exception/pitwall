@@ -35,6 +35,8 @@ final class AppModel: ObservableObject {
     /// A tile is filling the window; canvas chrome steps aside.
     @Published var fullScreen = false
     @Published var inboxOpen = false
+    @Published var searchOpen = false
+    let search = SearchModel()
     @Published var inboxSelection: String?
     @Published var sidebarVisible = UserDefaults.standard.object(forKey: "sidebarVisible") as? Bool ?? true {
         didSet { UserDefaults.standard.set(sidebarVisible, forKey: "sidebarVisible") }

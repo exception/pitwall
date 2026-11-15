@@ -489,7 +489,7 @@ final class CanvasController: NSObject {
         return CGRect(x: left, y: 34, width: canvas.bounds.width - left - 10, height: canvas.bounds.height - 44)
     }
 
-    private func animateLayout() {
+    func animateLayout() {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = Prefs.shared.motion ? 0.2 : 0
             ctx.allowsImplicitAnimation = true
@@ -564,6 +564,10 @@ final class CanvasController: NSObject {
         }
     }
 
+    func promptText(title: String, value: String, button: String, done: @escaping (String) -> Void) {
+        prompt(title: title, value: value, button: button, done: done)
+    }
+
     private func prompt(title: String, value: String, button: String = "Save", done: @escaping (String) -> Void) {
         let alert = NSAlert()
         alert.messageText = title
@@ -593,7 +597,15 @@ final class CanvasController: NSObject {
             m.addItem(MenuAction("Restart session") { [weak self] in self?.restartSession(id) })
         }
         if t.kind == .logs, t.watchCommand != nil {
-            m.addItem(MenuAction("Run again") { [weak self] in self?.rerunWatch(id) })
+            m.addItem(MenuAction(t.keepAlive == true ? "Restart server" : "Run again") { [weak self] in self?.rerunWatch(id) })
+            if t.keepAlive == true {
+                m.addItem(MenuAction("Stop server") { [weak self] in self?.stopServer(id) })
+            } else if t.state != .working {
+                m.addItem(MenuAction("Keep running (restart on exit)") { [weak self] in
+                    self?.store.updateTile(id) { $0.keepAlive = true }
+                    self?.rerunWatch(id)
+                })
+            }
         }
         if t.kind == .logs || t.kind == .pr {
             m.addItem(MenuAction(t.kind == .pr ? "Send failures to agent" : "Send output to agent") { [weak self] in
@@ -642,6 +654,7 @@ final class CanvasController: NSObject {
         m.addItem(MenuAction("New note") { [weak self] in self?.newNote(at: w) })
         m.addItem(MenuAction("New browser") { [weak self] in self?.open(target: "http://localhost:3000", at: w) })
         m.addItem(MenuAction("Watch a command…") { [weak self] in self?.promptWatch(at: w) })
+        m.addItem(MenuAction("Run dev server…") { [weak self] in self?.promptServer(at: w) })
         m.addItem(MenuAction("Follow pull request") { [weak self] in
             guard let self else { return }
             self.newPR(repo: self.board.root ?? self.defaultCwd, at: w)
@@ -649,6 +662,7 @@ final class CanvasController: NSObject {
         m.addItem(MenuAction("New frame") { [weak self] in self?.newFrame() })
         m.addItem(.separator())
         m.addItem(MenuAction("Tidy up") { [weak self] in self?.tidy() })
+        m.addItem(MenuAction("Save layout…") { [weak self] in self?.promptSaveLayout() })
         m.addItem(MenuAction("Zoom to fit") { [weak self] in self?.zoomToFit() })
         return m
     }
@@ -1145,6 +1159,8 @@ final class CanvasController: NSObject {
     var watchFailingLine: [String: String] = [:]
     /// PR tiles: comment ids already seen.
     var prSeenComments: [String: Set<String>] = [:]
+    /// Dev servers: recent automatic restarts (for crash-loop backoff).
+    var serverRestarts: [String: [Date]] = [:]
     private var scanInFlight = Set<String>()
 
     static let imagePattern = try! NSRegularExpression(

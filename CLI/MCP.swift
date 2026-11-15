@@ -38,6 +38,13 @@ final class MCPServer {
             args["command"] = a["command"] as? String ?? ""
             return try self.call("tile.watch", args: args)
         },
+        Tool(name: "search_terminals",
+             description: "Search the output history of every terminal and agent on the user's canvas (all boards). Useful to find an error another tile printed, a URL, or what a command output earlier. Wrap in /slashes/ for a regex.",
+             schema: ["type": "object", "properties": [
+                "query": ["type": "string", "description": "Text (case-insensitive) or /regex/."],
+             ], "required": ["query"]]) { a in
+            try self.call("search", args: ["query": a["query"] as? String ?? "", "limit": "40"])
+        },
         Tool(name: "follow_pr",
              description: "Show a GitHub pull request as a tile linked to you, with live CI checks and review comments. Defaults to the PR for the current branch. Failures can be sent back to you.",
              schema: ["type": "object", "properties": [

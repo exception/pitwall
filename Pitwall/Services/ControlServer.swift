@@ -46,6 +46,12 @@ final class ControlServer {
         var res = ControlResponse(ok: false, error: "app not ready")
         if req.cmd == "agent.permission" {
             res = handlePermission(req)
+        } else if req.cmd == "search" {
+            var tiles: [(Board, Tile)] = []
+            DispatchQueue.main.sync { tiles = Store.shared.boards.flatMap { b in b.tiles.filter(\.isTerminalBacked).map { (b, $0) } } }
+            let hits = CanvasController.searchTerminals(req.args?["query"] ?? "", tiles: tiles, limit: Int(req.args?["limit"] ?? "") ?? 50)
+            res = ok(.array(hits.map { h in .object(["board": .string(h.boardName), "tile_id": .string(h.tileID), "tile": .string(h.tileName),
+                                                     "line": .string(String(h.line + 1)), "text": .string(h.text)]) }))
         } else {
             DispatchQueue.main.sync { res = self.handle(req) }
         }
@@ -85,6 +91,8 @@ final class ControlServer {
         if let v = t.task { o["task"] = .string(String(v.prefix(300))) }
         if let v = t.watchCommand { o["command"] = .string(v) }
         if let v = t.prRef { o["pr"] = .string(v) }
+        if t.keepAlive == true { o["server"] = .bool(true) }
+        o["frame"] = .string([t.frame.minX, t.frame.minY, t.frame.width, t.frame.height].map { String(Int($0)) }.joined(separator: ","))
         return .object(o)
     }
 
@@ -161,6 +169,36 @@ final class ControlServer {
             guard let id = req.tileID ?? from, store.findTile(id) != nil else { return ok() }
             ctl.watchExited(id, code: Int(args["code"] ?? "") ?? 1)
             return ok()
+
+        case "tile.server":
+            guard let cmd = args["command"], !cmd.isEmpty else { return fail("command required") }
+            ensureBoard(of: from)
+            return ok(.string(ctl.newServer(command: cmd, cwd: args["cwd"], at: near(from), from: from)))
+
+        case "tile.move":
+            guard let id = req.tileID, let t = store.findTile(id)?.tile, let x = Double(args["x"] ?? ""), let y = Double(args["y"] ?? "") else {
+                return fail("tile.move <id> x y")
+            }
+            ctl.moveTile(id, to: CGRect(origin: CGPoint(x: x, y: y), size: t.frame.size), persist: true)
+            return ok()
+
+        case "layout.save":
+            guard let name = args["name"], !name.isEmpty else { return fail("name required") }
+            return ok(.string(ctl.saveLayout(name: name).id))
+
+        case "layout.restore":
+            guard let name = args["name"], let l = ctl.board.layouts?.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame || $0.id == name }) else {
+                return fail("no layout named \(args["name"] ?? "")")
+            }
+            ctl.restoreLayout(l.id)
+            return ok()
+
+        case "layout.list":
+            return ok(.array((ctl.board.layouts ?? []).map { .object(["id": .string($0.id), "name": .string($0.name), "tiles": .string(String($0.tiles.count))]) }))
+
+        case "search":
+            // The scan happens off-main below; this just snapshots the tiles.
+            return fail("internal")
 
         case "tile.pr":
             ensureBoard(of: from)

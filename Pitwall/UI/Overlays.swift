@@ -491,6 +491,7 @@ struct PickerView: View {
         let name: String
         let glyph: String
         let key: String
+        var server = false
         var id: String { name }
     }
 
@@ -503,6 +504,7 @@ struct PickerView: View {
         .init(kind: .diff, name: "Diff", glyph: "plusminus", key: "d"),
         .init(kind: .logs, name: "Watch", glyph: "waveform.path.ecg", key: "w"),
         .init(kind: .pr, name: "Pull request", glyph: "arrow.triangle.pull", key: "p"),
+        .init(kind: .logs, name: "Dev server", glyph: "server.rack", key: "s", server: true),
     ]
 
     var body: some View {
@@ -520,13 +522,13 @@ struct PickerView: View {
                     // Single keys pick a type while the field is empty.
                     guard query.isEmpty, press.modifiers.isEmpty else { return .ignored }
                     let c = press.characters.lowercased()
-                    if let item = items.first(where: { $0.key == c }) { model.pick(item.kind); return .handled }
+                    if let item = items.first(where: { $0.key == c }) { choose(item); return .handled }
                     if c == "g" { model.pickerPoint = nil; model.controller?.newFrame(); return .handled }
                     return .ignored
                 }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
                 ForEach(items) { item in
-                    Button { model.pick(item.kind) } label: {
+                    Button { choose(item) } label: {
                         VStack(spacing: 6) {
                             Image(systemName: item.glyph)
                                 .font(.system(size: 15, weight: .medium))
@@ -560,6 +562,16 @@ struct PickerView: View {
         .frame(width: 400)
         .pitwallGlass(cornerRadius: 22)
         .onAppear { DispatchQueue.main.async { focused = true } }
+    }
+
+    private func choose(_ item: Item) {
+        if item.server {
+            let at = model.pickerPoint?.world
+            model.pickerPoint = nil
+            model.controller?.promptServer(at: at)
+        } else {
+            model.pick(item.kind)
+        }
     }
 
     private var hint: String {

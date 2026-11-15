@@ -14,11 +14,16 @@ pitwall — control Pitwall from the terminal
                                             Run CMD in a watch tile that turns red when it fails
                                             (--auto-send: failures go to the calling agent)
   pitwall pr [NUMBER|URL] [--cwd DIR]       Follow a pull request (default: this branch's PR)
+  pitwall server [--cwd DIR] -- CMD...      Run a dev server that restarts if it crashes
+  pitwall search <text|/regex/>             Search every terminal's history (JSON)
+  pitwall layout save <name> | <name> | list
+                                            Save, restore or list layouts of the current board
   pitwall remote pair                       (WIP) Print a one-time link to pair a phone
   pitwall link <tile> <tile> [--handoff]    Connect two tiles (--handoff: pass results downstream)
   pitwall open <path|url>                   Open a file, folder or URL as a tile
   pitwall tile close <id>                   Close a tile
   pitwall tile focus <id>                   Fly the canvas to a tile
+  pitwall tile move <id> <x> <y>            Move a tile (canvas points)
   pitwall tile read <id> [--bytes N]        Print a tile's recent terminal output
   pitwall tile send <id> <text>             Type text into another terminal tile
   pitwall status <working|waiting|done|error|idle> [message]
@@ -84,6 +89,9 @@ func runTile(_ args: [String]) -> Int32 {
         case "close", "rm":
             guard let id = rest.first else { fputs("tile close <id>\n", stderr); return 2 }
             return Control.printResult(try Control.send("tile.close", tile: id))
+        case "move":
+            guard rest.count >= 3 else { fputs("tile move <id> <x> <y>\n", stderr); return 2 }
+            return Control.printResult(try Control.send("tile.move", tile: rest[0], args: ["x": rest[1], "y": rest[2]]))
         case "focus":
             guard let id = rest.first else { fputs("tile focus <id>\n", stderr); return 2 }
             return Control.printResult(try Control.send("tile.focus", tile: id))
@@ -232,7 +240,9 @@ case "agent":
     a["task"] = task.joined(separator: " ")
     do { exit(Control.printResult(try Control.send("agent.new", args: a))) }
     catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
-case "watch":
+case "watch", "server":
+    let cmdName = command
+    let isServer = cmdName == "server"
     var a: [String: String] = ["cwd": FileManager.default.currentDirectoryPath]
     var cmd: [String] = []
     var i = 0, rawMode = false
@@ -244,10 +254,23 @@ case "watch":
         else { cmd.append(rest[i]) }
         i += 1
     }
-    guard !cmd.isEmpty else { fputs("watch [--cwd DIR] -- CMD...\n", stderr); exit(2) }
+    guard !cmd.isEmpty else { fputs("\(cmdName) [--cwd DIR] -- CMD...\n", stderr); exit(2) }
     a["command"] = cmd.joined(separator: " ")
-    do { exit(Control.printResult(try Control.send("tile.watch", args: a))) }
+    do { exit(Control.printResult(try Control.send(isServer ? "tile.server" : "tile.watch", args: a))) }
     catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
+case "search":
+    guard !rest.isEmpty else { fputs("search <text|/regex/>\n", stderr); exit(2) }
+    do { exit(Control.printResult(try Control.send("search", args: ["query": rest.joined(separator: " ")], timeout: 60))) }
+    catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
+case "layout":
+    guard let first = rest.first else { fputs("layout save <name> | <name> | list\n", stderr); exit(2) }
+    do {
+        switch first {
+        case "list": exit(Control.printResult(try Control.send("layout.list")))
+        case "save": exit(Control.printResult(try Control.send("layout.save", args: ["name": rest.dropFirst().joined(separator: " ")])))
+        default: exit(Control.printResult(try Control.send("layout.restore", args: ["name": rest.joined(separator: " ")])))
+        }
+    } catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "watch-exit":
     _ = try? Control.send("watch.exit", args: ["code": rest.first ?? "1"], timeout: 5)
     exit(0)

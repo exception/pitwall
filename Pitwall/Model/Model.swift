@@ -75,6 +75,8 @@ struct Tile: Codable, Identifiable, Equatable {
     var prRef: String?
     /// Watch/PR tiles: send failures to the linked agent automatically.
     var autoSend: Bool?
+    /// Dev servers: restart the command when it exits or crashes.
+    var keepAlive: Bool?
 
     var displayName: String {
         if let name, !name.isEmpty { return name }
@@ -133,9 +135,23 @@ struct Board: Codable, Identifiable, Equatable {
     var links: [Link] = []
     var frames: [FrameGroup] = []
     var viewport = Viewport()
+    /// Named arrangements of this board's tiles.
+    var layouts: [SavedLayout]?
 
     func tile(_ id: String) -> Tile? { tiles.first { $0.id == id } }
     var maxZ: Int { tiles.map(\.z).max() ?? 0 }
+}
+
+/// A saved arrangement: where each tile sat, which frames were collapsed,
+/// and the viewport.
+struct SavedLayout: Codable, Identifiable, Equatable {
+    var id: String = "y-" + UUID().uuidString.prefix(8).lowercased()
+    var name: String
+    var tiles: [String: CGRect]
+    var frames: [String: CGRect]
+    var collapsed: [String]
+    var viewport: Viewport
+    var savedAt = Date()
 }
 
 /// A message sent between linked agents.

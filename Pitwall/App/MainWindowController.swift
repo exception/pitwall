@@ -12,6 +12,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var toolbarHost: NSView?
     private var inboxHost: NSView?
     private var inboxMonitor: Any?
+    private var searchHost: NSView?
     private var trailingHost: NSView?
     private var dispatchHost: NSView?
     private var sidebarLeading: NSLayoutConstraint!
@@ -75,6 +76,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 NSEvent.removeMonitor(m)
                 self.inboxMonitor = nil
             }
+        }.store(in: &bag)
+        model.search.controller = controller
+        model.$searchOpen.dropFirst().sink { [weak self] open in
+            guard let self, let content = self.window?.contentView else { return }
+            self.searchHost?.removeFromSuperview()
+            self.searchHost = nil
+            guard open else {
+                if let id = self.controller.focusedTileID { self.controller.focus(tileID: id, makeFirstResponder: true) }
+                return
+            }
+            if self.controller.fullScreenTileID != nil { self.controller.exitFullScreen() }
+            let h = self.host(SearchPanel(model: self.model, search: self.model.search))
+            content.addSubview(h)
+            NSLayoutConstraint.activate([
+                h.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+                h.topAnchor.constraint(equalTo: content.topAnchor, constant: 90),
+            ])
+            self.searchHost = h
+            self.window?.makeKeyAndOrderFront(nil)
+            self.window?.makeFirstResponder(h)
         }.store(in: &bag)
         model.$fullScreen.dropFirst().sink { [weak self] full in
             guard let self else { return }

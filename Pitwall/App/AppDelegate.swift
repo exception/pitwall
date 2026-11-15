@@ -5,6 +5,7 @@ import UserNotifications
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSMenuDelegate {
     private var main: MainWindowController!
     private var goMenu: NSMenu?
+    private var layoutsMenu: NSMenu?
     private let control = ControlServer()
     private var signalSources: [DispatchSourceSignal] = []
 
@@ -133,6 +134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             key(MenuAction("New Browser", key: "b") { ctl.open(target: "http://localhost:3000") }, [.command, .shift]),
             key(MenuAction("Show Diff", key: "d") { ctl.newDiff() }, [.command, .shift]),
             key(MenuAction("New Frame", key: "g") { ctl.newFrame() }, [.command, .shift]),
+            MenuAction("Watch a Command…") { ctl.promptWatch() },
+            MenuAction("Run Dev Server…") { ctl.promptServer() },
+            MenuAction("Follow Pull Request") { ctl.newPR(repo: ctl.board.root ?? ctl.defaultCwd) },
             MenuAction("Open…", key: "o") { model.chooseFile { ctl.open(target: $0.path) } },
             .separator(),
             key(MenuAction("Add Board…", key: "o") { model.addBoard() }, [.command, .shift]),
@@ -149,6 +153,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"),
             NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"),
             NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"),
+            .separator(),
+            MenuAction("Search Terminals…", key: "f") { [weak self] in self?.main.showWindow(nil); model.searchOpen = true },
         ])
 
         let appearance = NSMenu(title: "Appearance")
@@ -161,6 +167,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
         appearanceItem.submenu = appearance
 
+        // Layouts are rebuilt from the current board each time the menu opens.
+        let layouts = NSMenu(title: "Layouts")
+        layouts.delegate = self
+        layoutsMenu = layouts
+        let layoutsItem = NSMenuItem(title: "Layouts", action: nil, keyEquivalent: "")
+        layoutsItem.submenu = layouts
+        menuNeedsUpdate(layouts)
+
         menu("View", [
             MenuAction("Zoom In", key: "=") { ctl.setZoom(min(CanvasView.maxZoom, ctl.canvas.viewport.zoom * 1.25)) },
             MenuAction("Zoom Out", key: "-") { ctl.setZoom(max(CanvasView.minZoom, ctl.canvas.viewport.zoom / 1.25)) },
@@ -171,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             MenuAction("Center Stage", key: "\r") { if let id = ctl.focusedTileID { ctl.flyTo(tileID: id, fill: true) } },
             key(MenuAction("Full Screen Tile", key: "f") { ctl.toggleFullScreen() }, [.command, .shift]),
             key(MenuAction("Tidy Up", key: "\\") { ctl.tidy() }, [.command, .shift]),
+            layoutsItem,
             .separator(),
             key(MenuAction("Toggle Sidebar", key: "s") { model.sidebarVisible.toggle() }, [.command, .control]),
             appearanceItem,
@@ -196,6 +211,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === layoutsMenu, let ctl = main?.controller {
+            menu.removeAllItems()
+            menu.addItem(MenuAction("Save Layout…", key: "s") { ctl.promptSaveLayout() }.withMods([.command, .option]))
+            let list = ctl.board.layouts ?? []
+            if !list.isEmpty { menu.addItem(.separator()) }
+            for (i, l) in list.enumerated() {
+                menu.addItem(MenuAction(l.name, key: i < 9 ? "\(i + 1)" : "") { ctl.restoreLayout(l.id) }.withMods([.control]))
+            }
+            if !list.isEmpty {
+                let del = NSMenu(title: "Delete Layout")
+                for l in list { del.addItem(MenuAction(l.name) { ctl.deleteLayout(l.id) }) }
+                let di = NSMenuItem(title: "Delete Layout", action: nil, keyEquivalent: "")
+                di.submenu = del
+                menu.addItem(.separator())
+                menu.addItem(di)
+            }
+            return
+        }
         guard menu === goMenu, let ctl = main?.controller else { return }
         menu.removeAllItems()
         let waiting = Store.shared.boards.flatMap(\.tiles).filter { $0.state == .waiting }.count

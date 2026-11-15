@@ -147,7 +147,36 @@ scenario_watch() {
   stop_app
 }
 
-if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals handoff watch); fi
+scenario_boardtools() {
+  echo "boardtools: layouts, search across terminals, self-restarting dev servers"
+  reset; start_app
+  local A=$($H tile new --cwd $PWD --title "One") B=$($H tile new --cwd $PWD --title "Two"); sleep 1.5
+  local fa=$(tile_field $A frame)
+  $H layout save "Side by side" >/dev/null
+  $H tile move $A 2000 1500; sleep 0.5
+  check "tile moved" '[[ $(tile_field $A frame) != $fa ]]'
+  $H layout "Side by side"; sleep 0.8
+  check "layout restored tile position" '[[ $(tile_field $A frame) == $fa ]]'
+  check "layout listed" '$H layout list | grep -q "Side by side"'
+  $H tile send $B $'echo needle-$((40+2))-found\n'; sleep 1
+  check "search finds output in another tile" '$H search needle-42 | grep -q "$B"'
+  check "regex search" '$H search "/needle-[0-9]+-found/" | grep -q needle-42-found'
+  osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $PID) to true" -e 'delay 0.3' \
+    -e 'tell application "System Events" to keystroke "f" using command down' -e 'delay 0.5' \
+    -e 'tell application "System Events" to keystroke "needle"' >/dev/null
+  sleep 1.2; shot search
+  osascript -e 'tell application "System Events" to key code 53' >/dev/null; sleep 0.3
+  local S=$($H server --cwd $PWD -- 'python3 -m http.server 8765 --bind 127.0.0.1'); sleep 6
+  check "server opened a browser on its URL" '$H tile list | grep -q "127.0.0.1:8765"'
+  local C=$($H server --cwd $PWD -- 'echo crashing; sleep 1; exit 7'); sleep 3.5
+  check "crashed server restarts" '[[ $(tile_field $C message) == *"restarting"* || $(tile_field $C message) == Restarted ]]'
+  sleep 2; shot server
+  check "server restarted (state running again)" '[[ $(tile_field $C message) == Restarted || $(tile_field $C message) == *restarting* ]]'
+  $H tile close $S; $H tile close $C
+  stop_app
+}
+
+if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals handoff watch boardtools); fi
 for s in $scenarios; do scenario_$s; done
 reset
 echo; [[ $FAILED == 0 ]] && echo "All UI scenarios passed. Screenshots: $OUT/" || { echo "Some UI scenarios FAILED. See $OUT/"; exit 1; }
