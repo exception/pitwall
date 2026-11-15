@@ -223,6 +223,7 @@ struct TrailingControls: View {
 struct DispatchBar: View {
     @ObservedObject var model: AppModel
     @FocusState private var focused: Bool
+    @State private var highlight = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -247,6 +248,15 @@ struct DispatchBar: View {
                                       subtitle: "Works directly in the folder's checked-out branch"),
                                ],
                                selected: model.dispatchWorktree ? "worktree" : "current") { model.dispatchWorktree = $0 == "worktree" }
+                }
+                if model.dispatchAgent != .shell {
+                    ChipPicker(symbol: "square.stack.3d.up", title: model.dispatchCount == 1 ? "×1" : "×\(model.dispatchCount) attempts",
+                               options: [
+                                .init(value: "1", symbol: "1.circle", title: "One agent", subtitle: "The usual"),
+                                .init(value: "2", symbol: "2.circle", title: "Two attempts", subtitle: "Same task in 2 worktrees, then pick the best"),
+                                .init(value: "3", symbol: "3.circle", title: "Three attempts", subtitle: "Same task in 3 worktrees, then pick the best"),
+                               ],
+                               selected: String(model.dispatchCount)) { model.dispatchCount = Int($0) ?? 1 }
                 }
                 ChipPicker(symbol: model.dispatchAgent == .shell ? "terminal" : "sparkle", title: model.dispatchAgent.title,
                            options: [
@@ -275,7 +285,15 @@ struct DispatchBar: View {
         .padding(.leading, 18).padding(.trailing, 10).padding(.vertical, 10)
         .frame(width: 640)
         .pitwallGlass(cornerRadius: 26)
-        .onChange(of: model.dispatchFocusToken) { _ in focused = true }
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .strokeBorder(Color(ns: Theme.amber).opacity(highlight ? 0.9 : 0), lineWidth: 2))
+        .onChange(of: model.dispatchFocused) { f in
+            guard f else { return }
+            focused = true
+            model.dispatchFocused = false
+            withAnimation(.easeOut(duration: 0.15)) { highlight = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation(.easeOut(duration: 0.4)) { highlight = false } }
+        }
     }
 
     private var placeholder: String {

@@ -54,6 +54,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.setSidebar(visible: v)
             if self?.controller.fullScreenTileID != nil { DispatchQueue.main.async { self?.controller.layoutAll(live: false) } }
         }.store(in: &bag)
+        // "New agent": give the dispatch bar real keyboard focus.
+        model.$dispatchFocusToken.dropFirst().sink { [weak self] _ in
+            guard let self, let host = self.dispatchHost else { return }
+            if self.controller.fullScreenTileID != nil { self.controller.exitFullScreen() }
+            self.window?.makeKeyAndOrderFront(nil)
+            self.window?.makeFirstResponder(host)
+            DispatchQueue.main.async { self.model.dispatchFocused = true }
+        }.store(in: &bag)
         model.$inboxOpen.sink { [weak self] open in
             guard let self, let h = self.inboxHost else { return }
             h.isHidden = !open

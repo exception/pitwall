@@ -168,6 +168,10 @@ final class CanvasController: NSObject {
             return d
         case .subagent:
             return SubagentTileContent()
+        case .compare:
+            let c = CompareTileContent(tileIDs: (t.target ?? "").split(separator: ",").map(String.init))
+            c.controller = self
+            return c
         }
     }
 
@@ -189,6 +193,7 @@ final class CanvasController: NSObject {
         case .image: return CGSize(width: 396, height: 308)
         case .diff: return CGSize(width: 682, height: 638)
         case .subagent: return CGSize(width: 286, height: 110)
+        case .compare: return CGSize(width: 726, height: 330)
         }
     }
 
@@ -240,7 +245,8 @@ final class CanvasController: NSObject {
     }
 
     /// Starts a Claude Code agent on a task, optionally in a new worktree.
-    func newAgent(task: String, repo: String?, worktree: Bool, agent: AgentKind, at: CGPoint? = nil, parent: String? = nil) {
+    @discardableResult
+    func newAgent(task: String, repo: String?, worktree: Bool, agent: AgentKind, at: CGPoint? = nil, parent: String? = nil, name: String? = nil) -> String {
         var cwd = repo ?? defaultCwd
         var branch: String?
         if worktree, let top = Git.toplevel(cwd) {
@@ -259,6 +265,7 @@ final class CanvasController: NSObject {
         t.sessionID = t.id
         t.task = task.isEmpty ? nil : task
         t.autoName = task.isEmpty ? agent.title : ClaudeIntegration.name(fromTask: task)
+        t.name = name
         t.worktree = branch == nil ? nil : cwd
         t.branch = branch
         t.command = agent.command(task: task)
@@ -266,6 +273,7 @@ final class CanvasController: NSObject {
         if agent == .claude { hookedTiles.insert(t.id) }
         let id = addTile(t, at: at)
         if let parent { addLink(from: parent, to: id, kind: .spawned) }
+        return id
     }
 
     /// Opens a path or URL as the right kind of tile.
@@ -561,9 +569,18 @@ final class CanvasController: NSObject {
         if t.isTerminalBacked {
             m.addItem(MenuAction("Restart session") { [weak self] in self?.restartSession(id) })
         }
+        if t.kind == .agent {
+            m.addItem(MenuAction("Review with a new agent") { [weak self] in self?.startReview(of: id) })
+        }
         let links = board.links.filter { $0.from == id || $0.to == id }
         if !links.isEmpty {
             m.addItem(.separator())
+            for l in links where l.from == id {
+                let name = board.tile(l.to)?.displayName ?? l.to
+                let item = MenuAction("Hand off to \(name) when done") { [weak self] in self?.toggleHandoff(l.id) }
+                item.state = l.isHandoff ? .on : .off
+                m.addItem(item)
+            }
             for l in links {
                 let other = l.from == id ? l.to : l.from
                 let name = board.tile(other)?.displayName ?? other
@@ -717,6 +734,9 @@ final class CanvasController: NSObject {
         case "SessionStart":
             store.updateTile(tileID) { if $0.kind == .terminal { $0.kind = .agent } }
             setState(tileID, .idle)
+            if let ctx = sharedNotesContext(for: tileID) {
+                return Self.hookJSON(["hookSpecificOutput": ["hookEventName": "SessionStart", "additionalContext": ctx]])
+            }
         case "UserPromptSubmit":
             let prompt = args["prompt"] ?? ""
             store.updateTile(tileID) { t in
@@ -728,6 +748,9 @@ final class CanvasController: NSObject {
             }
             clearFinishedSubagents(of: tileID)
             setState(tileID, .working, message: nil)
+            if let ctx = sharedNotesContext(for: tileID) {
+                return Self.hookJSON(["hookSpecificOutput": ["hookEventName": "UserPromptSubmit", "additionalContext": ctx]])
+            }
         case "PreToolUse":
             if tool == "Task" || tool == "Agent" {
                 spawnSubagent(parent: tileID, toolUseID: args["tool_use_id"],
@@ -758,12 +781,120 @@ final class CanvasController: NSObject {
             }
             let summary = args["last_assistant_message"].map { String($0.prefix(160)) }
             setState(tileID, focusedTileID == tileID && NSApp.isActive ? .idle : .done, message: summary)
+            handOff(from: tileID, result: args["last_assistant_message"] ?? "")
         case "SessionEnd":
             setState(tileID, .idle, message: nil)
         default:
             break
         }
         return nil
+    }
+
+    static func hookJSON(_ obj: [String: Any]) -> String? {
+        (try? JSONSerialization.data(withJSONObject: obj)).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    // MARK: Workflows (stage D)
+
+    /// Recent hand-offs per link, to stop runaway ping-pong between agents.
+    private var handoffLog: [String: [Date]] = [:]
+
+    /// Pipeline links: send a finished turn's result downstream.
+    func handOff(from tileID: String, result: String) {
+        guard let (b, src) = store.findTile(tileID) else { return }
+        for link in b.links where link.from == tileID && link.isHandoff {
+            let recent = (handoffLog[link.id] ?? []).filter { Date().timeIntervalSince($0) < 600 }
+            guard recent.count < 4 else {
+                model?.toast(.init(kind: .info, title: "Hand-off paused", body: "\(src.displayName) handed off 4 times in 10 minutes. Check the pipeline.", tileID: tileID))
+                continue
+            }
+            handoffLog[link.id] = recent + [Date()]
+            var text = "\(src.displayName) finished its step. Its result:\n\n" + String(result.prefix(4000))
+            if let br = src.branch { text += "\n\n(Its work is on branch \(br)\(src.worktree.map { " in \($0)" } ?? "").)" }
+            if let err = sendMessage(from: tileID, to: link.to, text: text) {
+                model?.toast(.init(kind: .error, title: "Couldn't hand off", body: err, tileID: link.to))
+            }
+        }
+    }
+
+    func toggleHandoff(_ linkID: String) {
+        store.update { b in
+            if let i = b.links.firstIndex(where: { $0.id == linkID }) {
+                b.links[i].handoff = !(b.links[i].handoff ?? false)
+                b.links[i].kind = .manual
+            }
+        }
+        canvas.linksView.refresh()
+    }
+
+    /// Notes linked to an agent are given to it as context on every prompt.
+    func sharedNotesContext(for tileID: String) -> String? {
+        let notes = linkedTiles(of: tileID).map(\.1).filter { $0.kind == .note || $0.kind == .code }
+        guard !notes.isEmpty else { return nil }
+        var out = "Shared notes from Pitwall (linked to you on the canvas; you may edit these files to update them):\n"
+        for n in notes {
+            guard let path = n.target, let s = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            out += "\n--- \(path) ---\n" + String(s.prefix(6000)) + "\n"
+        }
+        return out
+    }
+
+    /// Starts a reviewer agent on the same checkout, linked to the worker.
+    func startReview(of tileID: String) {
+        guard let t = board.tile(tileID) else { return }
+        let dir = t.worktree ?? t.cwd ?? defaultCwd
+        let task = """
+        You are reviewing the work of another agent: Pitwall tile \(tileID) ("\(t.displayName)")\(t.branch.map { " on branch \($0)" } ?? ""). \
+        Read its changes (git diff against the base branch, plus uncommitted changes). Look for bugs, missing tests, \
+        risky changes and anything that doesn't match the task\(t.task.map { " (\"\(String($0.prefix(300)))\")" } ?? ""). \
+        Do not edit files yourself. When done, use the pitwall send_message tool to send concise, actionable findings to tile \(tileID).
+        """
+        let near = CGPoint(x: t.frame.maxX + 66, y: t.frame.minY)
+        let id = newAgent(task: task, repo: dir, worktree: false, agent: .claude,
+                          at: freeSpot(size: Self.defaultSize(.agent), near: near), name: "Review · " + t.displayName)
+        addLink(from: tileID, to: id, kind: .manual)
+    }
+
+    /// Fan-out: the same task in N worktrees, framed, with a Compare tile.
+    func fanOut(task: String, repo: String?, agent: AgentKind, count: Int) {
+        let size = Self.defaultSize(.agent)
+        let v = canvas.visibleWorldRect
+        var origin = CanvasView.snap(CGPoint(x: v.minX + 120, y: v.minY + 140))
+        origin = freeSpot(size: CGSize(width: (size.width + 44) * CGFloat(count), height: size.height + 300), near: origin)
+        var ids: [String] = []
+        for i in 0..<count {
+            let at = CGPoint(x: origin.x + CGFloat(i) * (size.width + 44), y: origin.y)
+            ids.append(newAgent(task: task, repo: repo, worktree: true, agent: agent, at: at,
+                                name: "Attempt \(i + 1) · " + ClaudeIntegration.name(fromTask: task)))
+        }
+        var cmp = Tile(kind: .compare, frame: .zero)
+        cmp.target = ids.joined(separator: ",")
+        cmp.cwd = repo
+        cmp.autoName = "Compare attempts"
+        cmp.frame.size = CGSize(width: 726, height: 330)
+        let cmpID = addTile(cmp, at: CGPoint(x: origin.x, y: origin.y + size.height + 44), focus: false)
+        for id in ids { addLink(from: id, to: cmpID, kind: .spawned) }
+        var rect = CGRect(x: origin.x - 24, y: origin.y - 68, width: (size.width + 44) * CGFloat(count) - 20, height: size.height + 330 + 44 + 92)
+        rect = CanvasView.snap(rect)
+        var f = FrameGroup(title: "Fan-out · " + ClaudeIntegration.name(fromTask: task), frame: rect)
+        f.colorIndex = board.frames.count
+        store.update { $0.frames.append(f) }
+        reconcile()
+        zoomToFit()
+    }
+
+    /// Merges a winning attempt into its repo (in a terminal so you see it).
+    func pickAttempt(_ tileID: String) {
+        guard let t = store.findTile(tileID)?.tile, let branch = t.branch, let wt = t.worktree,
+              let top = Git.toplevel((wt as NSString).deletingLastPathComponent + "/../..") ?? Git.toplevel(wt) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Merge \(branch)?"
+        alert.informativeText = "Commits the attempt's changes on its branch and merges it into the checked-out branch of \((top as NSString).lastPathComponent). You'll see every step in a terminal tile."
+        alert.addButton(withTitle: "Merge")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let cmd = "git -C \(shellQuote(wt)) add -A && (git -C \(shellQuote(wt)) diff --cached --quiet || git -C \(shellQuote(wt)) commit -m \(shellQuote("Attempt: " + (t.task ?? branch)))) && git merge --no-ff \(shellQuote(branch))"
+        _ = newTerminal(cwd: top, command: cmd, name: "Merge " + branch)
     }
 
     private func describe(tool: String, args: [String: String]) -> String? {

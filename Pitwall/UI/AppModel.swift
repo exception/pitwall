@@ -26,7 +26,11 @@ final class AppModel: ObservableObject {
     @Published var dispatchWorktree = Prefs.shared.worktreeByDefault
     @Published var dispatchAgent: AgentKind = AgentKind(rawValue: Prefs.shared.defaultAgent) ?? .claude
     @Published var dispatchRepo: String?
+    /// Fan-out: how many parallel attempts to start.
+    @Published var dispatchCount = 1
     @Published var dispatchFocusToken = 0
+    /// Drives the dispatch field's focus + highlight.
+    @Published var dispatchFocused = false
     @Published var attentionCount = 0
     /// A tile is filling the window; canvas chrome steps aside.
     @Published var fullScreen = false
@@ -86,6 +90,8 @@ final class AppModel: ObservableObject {
         guard let ctl = controller else { return }
         if dispatchAgent == .shell {
             _ = ctl.newTerminal(cwd: dispatchRepo ?? board.root, command: task.isEmpty ? nil : task)
+        } else if dispatchCount > 1 && !task.isEmpty {
+            ctl.fanOut(task: task, repo: dispatchRepo ?? board.root, agent: dispatchAgent, count: dispatchCount)
         } else {
             ctl.newAgent(task: task, repo: dispatchRepo ?? board.root, worktree: dispatchWorktree, agent: dispatchAgent)
         }

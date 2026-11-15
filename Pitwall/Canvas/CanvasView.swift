@@ -311,6 +311,7 @@ final class LinksView: NSView {
     var pending: (from: String, point: CGPoint)? { didSet { refresh() } }
     var hoverTarget: String? { didSet { if oldValue != hoverTarget { refresh() } } }
     private var shapes: [String: CAShapeLayer] = [:]
+    private var arrowheads: [String: CAShapeLayer] = [:]
     /// Flowing "current" layers per link (glow + sparks), shown while live.
     private var currents: [String: (glow: CAShapeLayer, sparks: CAShapeLayer)] = [:]
     /// When a link last carried a message, and in which direction.
@@ -368,6 +369,24 @@ final class LinksView: NSView {
                 shape.strokeColor = color.withAlphaComponent(link.kind == .spawned ? 0.55 : 0.8).cgColor
                 shape.lineWidth = max(1, (link.kind == .manual ? 2 : 1.5) * min(1, canvas.viewport.zoom * 1.2))
                 shape.lineDashPattern = link.kind == .spawned ? [2, 4] : nil
+                // Hand-off links point downstream with an arrowhead.
+                arrowheads[link.id]?.removeFromSuperlayer()
+                arrowheads[link.id] = nil
+                if link.isHandoff {
+                    let head = CAShapeLayer()
+                    let p1 = CGPoint(x: vb.frame.midX <= va.frame.midX ? vb.frame.maxX : vb.frame.minX, y: vb.frame.midY)
+                    let dir: CGFloat = vb.frame.midX <= va.frame.midX ? -1 : 1
+                    let s = 9 * max(0.5, min(1, canvas.viewport.zoom))
+                    let path = CGMutablePath()
+                    path.move(to: p1)
+                    path.addLine(to: CGPoint(x: p1.x - dir * s * 1.4, y: p1.y - s * 0.8))
+                    path.addLine(to: CGPoint(x: p1.x - dir * s * 1.4, y: p1.y + s * 0.8))
+                    path.closeSubpath()
+                    head.path = path
+                    head.fillColor = shape.strokeColor
+                    layer?.addSublayer(head)
+                    arrowheads[link.id] = head
+                }
             }
             for (id, s) in shapes where !seen.contains(id) {
                 s.removeFromSuperlayer(); shapes[id] = nil

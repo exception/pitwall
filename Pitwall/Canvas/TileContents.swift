@@ -506,3 +506,128 @@ final class SubagentTileContent: NSView, TileContent {
     func update(tile: Tile) { label.stringValue = tile.statusMessage ?? tile.task ?? "" }
     override func layout() { super.layout(); label.frame = bounds.insetBy(dx: 16 * zoom, dy: 4 * zoom) }
 }
+
+// MARK: - Compare (fan-out attempts)
+
+import SwiftUI
+
+/// Side-by-side status of fan-out attempts, with Open diff and Pick.
+final class CompareTileContent: NSView, TileContent {
+    let tileIDs: [String]
+    weak var controller: CanvasController? { didSet { model.controller = controller } }
+    private let model = CompareModel()
+    private let hostView: NSHostingView<CompareView>
+    private var zoom: CGFloat = 1
+    private let host = FlippedView()
+
+    override var isFlipped: Bool { true }
+
+    init(tileIDs: [String]) {
+        self.tileIDs = tileIDs
+        model.tileIDs = tileIDs
+        hostView = NSHostingView(rootView: CompareView(model: model))
+        super.init(frame: .zero)
+        addSubview(host)
+        host.addSubview(hostView)
+        model.refresh()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    var focusTarget: NSView? { nil }
+    func willClose() { model.stop() }
+    func apply(zoom: CGFloat, live: Bool) { self.zoom = zoom; needsLayout = true }
+    func update(tile: Tile) { model.objectWillChange.send() }
+
+    override func layout() {
+        super.layout()
+        host.frame = bounds
+        let w = bounds.width / max(zoom, 0.01), h = bounds.height / max(zoom, 0.01)
+        host.setBoundsSize(CGSize(width: w, height: h))
+        hostView.frame = CGRect(x: 0, y: 0, width: w, height: h)
+    }
+}
+
+final class CompareModel: ObservableObject {
+    struct Attempt: Identifiable {
+        let id: String
+        var name: String
+        var state: AgentState
+        var branch: String?
+        var added = 0, removed = 0, files = 0
+        var message: String?
+    }
+    weak var controller: CanvasController?
+    var tileIDs: [String] = []
+    @Published var attempts: [Attempt] = []
+    private var timer: Timer?
+
+    func refresh() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in self?.load() }
+        load()
+    }
+
+    func stop() { timer?.invalidate() }
+
+    private func load() {
+        let tiles = tileIDs.compactMap { Store.shared.findTile($0)?.tile }
+        DispatchQueue.global(qos: .utility).async {
+            let list: [Attempt] = tiles.map { t in
+                var a = Attempt(id: t.id, name: t.displayName, state: t.state, branch: t.branch, message: t.statusMessage)
+                if let wt = t.worktree {
+                    let base = Git.baseRef(wt) ?? "HEAD"
+                    let out = Git.run(["diff", "--numstat", base], in: wt) ?? ""
+                    for line in out.split(separator: "\n") {
+                        let p = line.split(separator: "\t")
+                        if p.count >= 2 { a.added += Int(p[0]) ?? 0; a.removed += Int(p[1]) ?? 0; a.files += 1 }
+                    }
+                    a.files += (Git.run(["ls-files", "--others", "--exclude-standard"], in: wt) ?? "").split(separator: "\n").count
+                }
+                return a
+            }
+            DispatchQueue.main.async { self.attempts = list }
+        }
+    }
+}
+
+struct CompareView: View {
+    @ObservedObject var model: CompareModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Pick the best attempt. Each one worked on its own branch.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(model.attempts) { a in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color(ns: Theme.color(for: a.state))).frame(width: 8, height: 8)
+                            Text(a.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        }
+                        Text(a.state.label).font(.system(size: 11)).foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text("+\(a.added)").foregroundStyle(Color(ns: Theme.green))
+                            Text("−\(a.removed)").foregroundStyle(Color(ns: Theme.red))
+                            Text("\(a.files) files").foregroundStyle(.secondary)
+                        }
+                        .font(.system(size: 12, design: .monospaced))
+                        if let m = a.message { Text(m).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(3) }
+                        Spacer(minLength: 0)
+                        HStack(spacing: 6) {
+                            Button("Open diff") { model.controller?.newDiff(for: a.id) }
+                            Button("Pick") { model.controller?.pickAttempt(a.id) }
+                                .buttonStyle(.borderedProminent).tint(Color(ns: Theme.amber))
+                                .disabled(a.state == .working)
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, minHeight: 200, alignment: .topLeading)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.04)))
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}

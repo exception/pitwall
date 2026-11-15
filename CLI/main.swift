@@ -7,11 +7,11 @@ pitwall — control Pitwall from the terminal
   pitwall tile list                         List tiles on the current board (JSON)
   pitwall tile new [--cwd DIR] [--title T] [-- CMD...]
                                             Open a terminal tile (optionally running CMD)
-  pitwall agent "<task>" [--cwd DIR] [--worktree] [--codex]
+  pitwall agent "<task>" [--cwd DIR] [--worktree] [--codex] [--count N]
                                             Start an agent tile on a task
   pitwall diff [DIR]                        Open a live diff tile for a git checkout
   pitwall remote pair                       Print a one-time link to pair a phone
-  pitwall link <tile> <tile>                Connect two tiles so their agents can talk
+  pitwall link <tile> <tile> [--handoff]    Connect two tiles (--handoff: pass results downstream)
   pitwall open <path|url>                   Open a file, folder or URL as a tile
   pitwall tile close <id>                   Close a tile
   pitwall tile focus <id>                   Fly the canvas to a tile
@@ -219,6 +219,8 @@ case "agent":
         case "--cwd": i += 1; a["cwd"] = rest[safe: i]
         case "--worktree": a["worktree"] = "1"
         case "--codex": a["agent"] = "codex"
+        case "--shell": a["agent"] = "shell"
+        case "--count": i += 1; a["count"] = rest[safe: i]
         default: task.append(rest[i])
         }
         i += 1
@@ -235,8 +237,9 @@ case "remote":
     do { exit(Control.printResult(try Control.send("remote.pair"))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "link":
-    guard rest.count == 2 else { fputs("link <tile> <tile>\n", stderr); exit(2) }
-    do { exit(Control.printResult(try Control.send("link.add", tile: rest[0], args: ["to": rest[1]]))) }
+    let ids = rest.filter { !$0.hasPrefix("--") }
+    guard ids.count == 2 else { fputs("link <tile> <tile> [--handoff]\n", stderr); exit(2) }
+    do { exit(Control.printResult(try Control.send("link.add", tile: ids[0], args: ["to": ids[1], "handoff": rest.contains("--handoff") ? "1" : "0"]))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "status":
     guard let state = rest.first else { fputs("status <state> [message]\n", stderr); exit(2) }

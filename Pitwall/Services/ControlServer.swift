@@ -116,6 +116,10 @@ final class ControlServer {
             ensureBoard(of: from)
             let agent = AgentKind(rawValue: args["agent"] ?? "claude") ?? .claude
             let before = Set(store.current.tiles.map(\.id))
+            if let n = Int(args["count"] ?? ""), n > 1 {
+                ctl.fanOut(task: args["task"] ?? "", repo: args["cwd"], agent: agent, count: min(n, 5))
+                return ok(.string(store.current.tiles.filter { !before.contains($0.id) }.map(\.id).joined(separator: ",")))
+            }
             ctl.newAgent(task: args["task"] ?? "", repo: args["cwd"], worktree: args["worktree"] == "1",
                          agent: agent, at: near(from), parent: from)
             let id = store.current.tiles.first { !before.contains($0.id) }?.id ?? ""
@@ -140,6 +144,9 @@ final class ControlServer {
                 return fail("both tiles must exist")
             }
             ctl.addLink(from: a, to: b)
+            if args["handoff"] == "1", let l = store.findTile(a)?.board.links.first(where: { $0.from == a && $0.to == b }) {
+                ctl.toggleHandoff(l.id)
+            }
             return ok()
 
         case "tile.open":

@@ -30,7 +30,7 @@ enum AgentState: String, Codable, CaseIterable {
 }
 
 enum TileKind: String, Codable {
-    case terminal, agent, note, code, image, browser, diff, logs, subagent
+    case terminal, agent, note, code, image, browser, diff, logs, subagent, compare
 }
 
 /// A tile on a board. Frames are in world coordinates (points at 100% zoom).
@@ -96,6 +96,9 @@ struct Link: Codable, Identifiable, Equatable {
     var kind: Kind
     /// Last time a message travelled along this link (drives the pulse).
     var lastActivity: Date?
+    /// Pipeline: when `from` finishes a turn, its result goes to `to`.
+    var handoff: Bool?
+    var isHandoff: Bool { handoff == true }
 }
 
 /// A labeled group of tiles.
