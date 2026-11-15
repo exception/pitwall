@@ -132,9 +132,12 @@ final class PitwallTests: XCTestCase {
 
     func testWaitSpecs() {
         XCTAssertEqual(CanvasController.waitSpec(run: "43775328604", pr: nil, command: nil),
-                       .init(command: "gh run watch 43775328604 --exit-status --interval 30", label: "CI run 43775328604"))
+                       .init(command: "gh run watch 43775328604 --exit-status --interval 30", label: "CI run 43775328604",
+                             runID: "43775328604"))
         let url = CanvasController.waitSpec(run: "https://github.com/acme/web/actions/runs/123/job/9", pr: nil, command: nil)
         XCTAssertEqual(url?.label, "CI run 123")
+        XCTAssertEqual(url?.runID, "123")
+        XCTAssertEqual(url?.runRepo, "acme/web")
         XCTAssertTrue(url?.command.contains("-R 'acme/web'") == true || url?.command.contains("-R acme/web") == true, url?.command ?? "")
         XCTAssertNil(CanvasController.waitSpec(run: "not-a-run", pr: nil, command: nil))
         XCTAssertEqual(CanvasController.waitSpec(run: nil, pr: "42", command: nil)?.label, "PR #42 checks")
@@ -153,5 +156,37 @@ final class PitwallTests: XCTestCase {
         XCTAssertNil(CanvasController.blockingWait("sleep 1 && npm test"))
         XCTAssertNil(CanvasController.blockingWait("gh pr checks 12"))
         XCTAssertNil(CanvasController.blockingWait("npm run build"))
+    }
+
+    func testRunInfoParse() {
+        let json = """
+        {"databaseId": 7, "displayTitle": "feat: thing", "workflowName": "Deploy", "headBranch": "feat/x",
+         "headSha": "abcdef1234", "event": "pull_request", "status": "in_progress", "conclusion": "",
+         "url": "https://github.com/acme/web/actions/runs/7", "createdAt": "2026-01-01T00:00:00Z",
+         "startedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:05:00Z", "attempt": 1,
+         "jobs": [
+          {"databaseId": 1, "name": "build", "status": "completed", "conclusion": "success",
+           "startedAt": "2026-01-01T00:00:05Z", "completedAt": "2026-01-01T00:02:05Z", "url": "u", "steps": []},
+          {"databaseId": 2, "name": "test", "status": "completed", "conclusion": "failure",
+           "startedAt": "2026-01-01T00:00:05Z", "completedAt": "2026-01-01T00:03:00Z", "url": "u",
+           "steps": [{"number": 1, "name": "Set up", "status": "completed", "conclusion": "success"},
+                     {"number": 2, "name": "Run tests", "status": "completed", "conclusion": "failure"}]},
+          {"databaseId": 3, "name": "deploy", "status": "in_progress", "conclusion": "",
+           "startedAt": "2026-01-01T00:03:00Z", "completedAt": "0001-01-01T00:00:00Z", "url": "u",
+           "steps": [{"number": 1, "name": "Set up", "status": "completed", "conclusion": "success"},
+                     {"number": 2, "name": "Push image", "status": "in_progress", "conclusion": ""}]},
+          {"databaseId": 4, "name": "unpromote", "status": "completed", "conclusion": "skipped", "steps": []}
+         ]}
+        """
+        guard let r = RunInfo.parse(Data(json.utf8)) else { return XCTFail("didn't parse") }
+        XCTAssertFalse(r.completed)
+        XCTAssertNil(r.conclusion)
+        XCTAssertEqual(r.countedJobs.count, 3)
+        XCTAssertEqual(r.progress, 2.0 / 3.0, accuracy: 0.001)
+        XCTAssertEqual(r.jobs[1].currentStep?.name, "Run tests")
+        XCTAssertEqual(r.jobs[2].currentStep?.name, "Push image")
+        XCTAssertNil(r.jobs[2].completedAt)
+        XCTAssertTrue(r.failureSummary.contains("test: failure at step \"Run tests\""))
+        XCTAssertEqual((185.0 as TimeInterval).clock, "3m 05s")
     }
 }

@@ -30,7 +30,7 @@ enum AgentState: String, Codable, CaseIterable {
 }
 
 enum TileKind: String, Codable {
-    case terminal, agent, note, code, image, browser, diff, logs, subagent, compare, pr
+    case terminal, agent, note, code, image, browser, diff, logs, subagent, compare, pr, run
 }
 
 /// A tile on a board. Frames are in world coordinates (points at 100% zoom).
@@ -91,6 +91,8 @@ struct Tile: Codable, Identifiable, Equatable {
     /// and what the agent planned to do next. The agent is woken when it ends.
     var waitLabel: String?
     var waitNote: String?
+    /// Run tiles: the run's repo (owner/name) when it isn't the cwd's; target is the run id.
+    var runRepo: String?
 
     var displayName: String {
         if let name, !name.isEmpty { return name }

@@ -230,9 +230,11 @@ final class ControlServer {
             }
             ensureBoard(of: from)
             let cwd = args["cwd"] ?? from.flatMap { store.findTile($0)?.tile.cwd }
-            let id = ctl.newWait(spec, note: args["then"], cwd: cwd, from: from)
+            let id = spec.runID.map { ctl.newRunWait(runID: $0, repo: spec.runRepo, note: args["then"], cwd: cwd, from: from) }
+                ?? ctl.newWait(spec, note: args["then"], cwd: cwd, from: from)
             let wake = from == nil ? "" : " When it finishes (success or failure) Pitwall will send you the result as a new message."
-            return ok(.string("Waiting on \(spec.label) in tile \(id) (`\(spec.command)`).\(wake) End your turn now instead of polling; don't run gh run watch, sleep or polling loops yourself."))
+            let how = spec.runID == nil ? " (`\(spec.command)`)" : " (a live Run tile)"
+            return ok(.string("Waiting on \(spec.label) in tile \(id)\(how).\(wake) End your turn now instead of polling; don't run gh run watch, sleep or polling loops yourself."))
 
         case "watch.exit":
             guard let id = req.tileID ?? from, store.findTile(id) != nil else { return ok() }

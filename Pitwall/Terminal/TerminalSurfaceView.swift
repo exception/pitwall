@@ -33,6 +33,8 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
     /// Agent CLIs (Claude Code, Codex) read images off the clipboard on
     /// Ctrl+V, so ⌘V with only an image on the clipboard sends Ctrl+V.
     var imagePasteSendsControlV = false
+    /// Output only: keystrokes and pastes are ignored (copying still works).
+    var readOnly = false
     private(set) var surface: ghostty_surface_t?
     var cellSize: CGSize = .zero
 
@@ -365,6 +367,7 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
     // MARK: Keyboard
 
     override func keyDown(with event: NSEvent) {
+        if readOnly { return }
         guard let surface else { interpretKeyEvents([event]); return }
 
         let translationModsGhostty = TerminalInput.flags(ghostty_surface_key_translation_mods(surface, TerminalInput.mods(event.modifierFlags)))
@@ -419,6 +422,16 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, focused, let surface else { return false }
+
+        if readOnly {
+            // Copying out still works; everything else goes to the app's menus.
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else { return false }
+            switch event.charactersIgnoringModifiers {
+            case "c": copy(nil); return true
+            case "a": selectAll(nil); return true
+            default: return false
+            }
+        }
 
         if imagePasteSendsControlV, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            event.charactersIgnoringModifiers == "v", ImageAttachments.isImageOnly(.general) {
@@ -583,6 +596,7 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
     }
 
     func insertText(_ string: Any, replacementRange: NSRange) {
+        if readOnly { return }
         guard NSApp.currentEvent != nil else { return }
         let chars: String
         switch string {
@@ -622,7 +636,7 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
     }
 
     @objc func paste(_ sender: Any?) {
-        guard let surface else { return }
+        guard !readOnly, let surface else { return }
         let a = "paste_from_clipboard"
         _ = ghostty_surface_binding_action(surface, a, UInt(a.utf8.count))
     }

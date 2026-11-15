@@ -182,7 +182,9 @@ final class TileView: NSView {
             add("waiting on \(w) · \((tile.waitingSince ?? tile.stateSince).elapsedShort)", Theme.green)
         } else if tile.kind != .terminal || tile.state != .idle {
             if tile.state != .idle {
-                add("\(tile.state == .waiting ? "needs you" : tile.state.label.lowercased()) · \(tile.stateSince.elapsedShort)",
+                let label = tile.state == .waiting ? "needs you"
+                    : (tile.state == .working && tile.waitLabel != nil ? "waiting" : tile.state.label.lowercased())
+                add("\(label) · \(tile.stateSince.elapsedShort)",
                     tile.state == .waiting ? Theme.amberText : Theme.text2)
             }
         }

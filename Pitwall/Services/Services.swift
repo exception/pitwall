@@ -124,6 +124,38 @@ enum Sessions {
                                    as: DaemonResponse.self))?.text
     }
 
+    /// Types a prompt into a session no tile is showing (its board isn't
+    /// open) and presses Return: attaches at the session's own size, sends
+    /// the text as a bracketed paste, then detaches. Works with any daemon
+    /// version, since it only uses `attach` and input frames.
+    static func submit(_ id: String, text: String, done: ((Bool) -> Void)? = nil) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let info = list().first { $0.id == id }
+            guard let info, info.alive, !info.attached,
+                  let fd = try? UnixSocket.connect(PitwallPaths.daemonSocket.path) else {
+                DispatchQueue.main.async { done?(false) }; return
+            }
+            defer { close(fd) }
+            let req = DaemonRequest(op: .attach, id: id, cols: info.cols ?? 120, rows: info.rows ?? 40)
+            guard UnixSocket.writeAll(fd, Wire.line(req)),
+                  let (line, _) = UnixSocket.readLine(fd),
+                  let res = try? Wire.decoder.decode(DaemonResponse.self, from: line), res.ok, res.created != true else {
+                DispatchQueue.main.async { done?(false) }; return
+            }
+            func frame(_ s: String) -> Data {
+                let p = Data(s.utf8)
+                var d = Data([FrameKind.input.rawValue])
+                withUnsafeBytes(of: UInt32(p.count).bigEndian) { d.append(contentsOf: $0) }
+                return d + p
+            }
+            _ = UnixSocket.writeAll(fd, frame("\u{1B}[200~" + text + "\u{1B}[201~"))
+            usleep(300_000)
+            let ok = UnixSocket.writeAll(fd, frame("\r"))
+            usleep(200_000)
+            DispatchQueue.main.async { done?(ok) }
+        }
+    }
+
     /// Strips ANSI escape sequences and carriage-return overwrites.
     static func plain(_ s: String) -> String {
         var out = s.replacingOccurrences(of: "\u{1B}\\[[0-9;?<>=]*[ -/]*[@-~]", with: "", options: .regularExpression)

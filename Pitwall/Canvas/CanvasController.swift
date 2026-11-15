@@ -171,7 +171,13 @@ final class CanvasController: NSObject {
             let session = TerminalSession(tileID: t.id, controller: self)
             surface.delegate = session
             surface.imagePasteSendsControlV = t.kind == .agent
+            // A wait only reports back; typing into it would just get in the way.
+            surface.readOnly = t.waitLabel != nil
             sessions[t.id] = session
+            if pendingDelivery.contains(t.id) {
+                let id = t.id
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.flushInbox(id) }
+            }
             return TerminalTileContent(surface: surface)
         case .browser:
             let b = BrowserTileContent(url: t.target ?? "http://localhost:3000")
@@ -191,6 +197,8 @@ final class CanvasController: NSObject {
             return d
         case .subagent:
             return SubagentTileContent()
+        case .run:
+            return RunTileContent(tileID: t.id, controller: self)
         case .pr:
             return PRTileContent(tileID: t.id, repo: t.target ?? t.cwd ?? NSHomeDirectory(), ref: t.prRef, controller: self)
         case .compare:
@@ -220,6 +228,7 @@ final class CanvasController: NSObject {
         case .subagent: return CGSize(width: 286, height: 110)
         case .compare: return CGSize(width: 726, height: 330)
         case .pr: return CGSize(width: 528, height: 572)
+        case .run: return CGSize(width: 528, height: 484)
         }
     }
 
@@ -432,12 +441,14 @@ final class CanvasController: NSObject {
     }
 
     func closeTile(_ id: String) {
-        guard let t = board.tile(id) else { return }
+        // Any board: waits close themselves while you're looking elsewhere.
+        guard let (owner, t) = store.findTile(id) else { return }
         if fullScreenTileID == id { fullScreenTileID = nil; model?.fullScreen = false }
         if t.isTerminalBacked, let sid = t.sessionID { Sessions.kill(sid) }
         sessions[id] = nil
         hookedTiles.remove(id)
-        store.update { b in
+        RunStore.shared.forget(id)
+        store.update(owner.id) { b in
             b.tiles.removeAll { $0.id == id }
             // Sub-agents go with their parent.
             let kids = b.links.filter { $0.from == id && $0.kind == .spawned }.map(\.to)
@@ -760,16 +771,40 @@ final class CanvasController: NSObject {
         let source = store.findTile(from)?.tile
         let fromName = source?.displayName ?? from
         var msg = AgentMessage(from: from, fromName: fromName, text: text)
-        if source?.kind == .logs || source?.kind == .pr { msg.noReply = true }
+        if [.logs, .pr, .run].contains(source?.kind) { msg.noReply = true }
         store.update(b.id) { bb in if let i = bb.links.firstIndex(where: { $0.id == link.id }) { bb.links[i].lastActivity = Date() } }
         if b.id == board.id { canvas.linksView.pulse(link: link, fromTile: from, text: text) }
-        if target.state == .working || target.state == .waiting || surface(for: to) == nil {
+        if target.state == .working || target.state == .waiting {
             store.inbox[to, default: []].append(msg) // delivered by the Stop hook
-        } else {
-            surface(for: to)?.submit(Self.format(msg))
+        } else if let s = surface(for: to) {
+            s.submit(Self.format(msg))
             setState(to, .working, message: "Message from \(fromName)")
+        } else if let sid = target.sessionID {
+            // Its board isn't open: type it into the session directly.
+            setState(to, .working, message: "Message from \(fromName)")
+            Sessions.submit(sid, text: Self.format(msg)) { [weak self] ok in
+                guard let self, !ok else { return }
+                // Couldn't reach it: hand it over when it's next shown or finishes a turn.
+                self.store.inbox[to, default: []].append(msg)
+                self.pendingDelivery.insert(to)
+                self.setState(to, .idle, message: "Message waiting: \(fromName)")
+            }
+        } else {
+            store.inbox[to, default: []].append(msg)
+            pendingDelivery.insert(to)
         }
         return nil
+    }
+
+    /// Delivers the next queued message to an idle agent whose terminal is up.
+    func flushInbox(_ id: String) {
+        pendingDelivery.remove(id)
+        guard let t = store.findTile(id)?.tile, t.state != .working, t.state != .waiting,
+              var queue = store.inbox[id], !queue.isEmpty, let s = surface(for: id) else { return }
+        let m = queue.removeFirst()
+        store.inbox[id] = queue.isEmpty ? nil : queue
+        s.submit(Self.format(m))
+        setState(id, .working, message: "Message from \(m.fromName)")
     }
 
     static func format(_ m: AgentMessage) -> String {
@@ -908,6 +943,8 @@ final class CanvasController: NSObject {
             // "Waiting for your input" is an idle reminder after a finished
             // turn, not a blocking question: that's Done, not Needs you.
             if args["notification_type"] == "idle_prompt" || msg.localizedCaseInsensitiveContains("waiting for your input") {
+                // Still waiting on CI or background work: not done yet.
+                if !refreshBackground(tileID, turnEnded: true).isEmpty { break }
                 if store.findTile(tileID)?.tile.state != .waiting { setState(tileID, focusedTileID == tileID ? .idle : .done) }
                 break
             }
@@ -1312,6 +1349,7 @@ final class CanvasController: NSObject {
     private func poll() {
         let pollStart = CACurrentMediaTime()
         defer { DevStats.pollMillis = (CACurrentMediaTime() - pollStart) * 1000 }
+        pollRuns()
         let infos = Sessions.list()
         DevStats.daemonSessions = infos.count
         var byID: [String: SessionInfo] = [:]
@@ -1381,6 +1419,12 @@ final class CanvasController: NSObject {
     var backgroundSubagents: [String: String] = [:]
     /// Agents whose background work ended without the agent picking up again yet.
     var backgroundEndedAt: [String: Date] = [:]
+    /// Agents with a queued message that couldn't be typed in yet: delivered
+    /// as soon as their terminal is on screen again.
+    var pendingDelivery = Set<String>()
+    /// Run tiles: last poll, and polls in flight.
+    var runPolledAt: [String: Date] = [:]
+    var runLoading = Set<String>()
     /// Agent → watch tile whose failure it was sent; rerun the watch when it finishes.
     var fixRequests: [String: String] = [:]
     var pendingPlacement: (point: CGPoint?, frameID: String?, expires: Date)?
