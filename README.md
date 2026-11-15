@@ -10,6 +10,11 @@
 <p align="center"><b>Every agent, one wall.</b><br>
 A native macOS canvas for running many AI coding agents side by side, and knowing at a glance which one needs you.</p>
 
+<p align="center">
+  <a href="https://github.com/exception/pitwall/releases/latest"><b>Download for macOS</b></a> ·
+  <a href="https://github.com/exception/pitwall/releases/download/v0.1.0/Pitwall-demo.mp4">Watch the 45-second tour</a>
+</p>
+
 ---
 
 When you run five Claude Code or Codex sessions at once, the hard part isn't the agents. It's the tabs. Which one is waiting on a permission? Which one finished ten minutes ago? Which branch was that on?
@@ -47,7 +52,7 @@ Pitwall puts every agent on an infinite canvas as a real terminal tile, reads th
 
 Pitwall needs **macOS 14 or later** on Apple silicon.
 
-Download the latest `Pitwall.dmg` from [Releases](https://github.com/exception/pitwall/releases), open it and drag Pitwall to Applications.
+Download the latest `Pitwall-<version>.dmg` from [Releases](https://github.com/exception/pitwall/releases/latest), open it and drag Pitwall to Applications. Releases are signed and notarized.
 
 Optional: **Pitwall › Install Command Line Tool…** adds `pitwall` to your PATH.
 
@@ -96,6 +101,7 @@ An iPhone companion app is in development: see your agents and approve their req
 scripts/bootstrap.sh     # once: pinned Ghostty (needs zig), web assets, Xcode project (xcodegen)
 xcodebuild -project Pitwall.xcodeproj -scheme Pitwall -configuration Debug -derivedDataPath build/dd build
 scripts/install.sh       # copy the build to /Applications
+scripts/release.sh       # signed + notarized DMG (needs a Developer ID and a notarytool profile)
 ```
 
 Tests:
