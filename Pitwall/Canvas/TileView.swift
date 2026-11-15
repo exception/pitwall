@@ -523,7 +523,13 @@ final class TileView: NSView {
         let pop = NSPopover()
         pop.behavior = .transient
         pop.animates = false
-        pop.contentViewController = NSHostingController(rootView: TimelineView_(tileID: tile.id, height: height))
+        // Fixed size up front: if SwiftUI resizes it after it's shown, AppKit
+        // keeps the bottom edge and the popover grows up over its button.
+        let host = NSHostingController(rootView: TimelineView_(tileID: tile.id, height: height))
+        host.sizingOptions = []
+        host.preferredContentSize = NSSize(width: 380, height: height)
+        pop.contentViewController = host
+        pop.contentSize = host.preferredContentSize
         // Anchor to the window's content view: NSPopover reads edges in the
         // positioning view's own coordinates, and the tile header is flipped.
         timelineDownward = downward
