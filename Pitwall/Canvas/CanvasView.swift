@@ -508,14 +508,30 @@ final class PassthroughView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// A labeled group of tiles drawn behind them.
+/// A labeled group of tiles drawn behind them. The title strip shows a
+/// collapse chevron and a live summary; edges resize the frame.
 final class FrameGroupView: NSView {
+    struct Summary: Equatable {
+        var text = ""
+        var states: [AgentState] = []
+        var attention = false
+    }
+
     var group: FrameGroup
     weak var canvas: CanvasView?
+    var summary = Summary() { didSet { if summary != oldValue { renderSummary() } } }
+    var dropTarget = false { didSet { if dropTarget != oldValue { updateColors() } } }
+
     private let label = NSTextField(labelWithString: "")
+    private let summaryLabel = NSTextField(labelWithString: "")
     private let swatch = CALayer()
+    private let chevron = NSImageView()
+    private var dots: [CALayer] = []
+    private var zoom: CGFloat = 1
     private var dragStart: NSPoint?
     private var frameAtStart = CGRect.zero
+    private enum Mode { case move, resize(right: Bool, bottom: Bool, left: Bool) }
+    private var mode: Mode = .move
 
     override var isFlipped: Bool { true }
 
@@ -526,47 +542,135 @@ final class FrameGroupView: NSView {
         layer?.cornerCurve = .continuous
         layer?.addSublayer(swatch)
         label.font = .systemFont(ofSize: 15, weight: .semibold)
-        addSubview(label)
+        label.lineBreakMode = .byTruncatingTail
+        summaryLabel.lineBreakMode = .byTruncatingTail
+        summaryLabel.alignment = .right
+        chevron.imageScaling = .scaleProportionallyUpOrDown
+        [label, summaryLabel, chevron].forEach(addSubview)
         update(group)
     }
     required init?(coder: NSCoder) { fatalError() }
 
     func update(_ g: FrameGroup) {
+        let collapsedChanged = g.collapsed != group.collapsed
         group = g
         label.stringValue = g.title
+        chevron.image = NSImage(systemSymbolName: g.collapsed ? "chevron.right" : "chevron.down", accessibilityDescription: g.collapsed ? "Expand" : "Collapse")
+        chevron.setAccessibilityLabel(g.collapsed ? "Expand frame" : "Collapse frame")
+        if collapsedChanged { renderSummary() }
         needsLayout = true
         updateColors()
     }
 
-    override func viewDidChangeEffectiveAppearance() { updateColors() }
+    override func viewDidChangeEffectiveAppearance() { updateColors(); renderSummary() }
 
     private func updateColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = Theme.frameFill.cgColor
-            layer?.borderColor = Theme.hairline.cgColor
-            layer?.borderWidth = 1
-            swatch.backgroundColor = Theme.boardColors[group.colorIndex % Theme.boardColors.count].cgColor
+            let accent = Theme.boardColors[group.colorIndex % Theme.boardColors.count]
+            layer?.backgroundColor = (dropTarget ? accent.withAlphaComponent(0.10) : (group.collapsed ? Theme.tile : Theme.frameFill)).cgColor
+            let attention = group.collapsed && summary.attention
+            layer?.borderColor = (dropTarget ? accent : (attention ? Theme.amber : Theme.hairline)).cgColor
+            layer?.borderWidth = dropTarget || attention ? 1.5 : 1
+            layer?.shadowOpacity = group.collapsed ? 0.12 : 0
+            layer?.shadowRadius = 10
+            layer?.shadowOffset = CGSize(width: 0, height: -3)
+            swatch.backgroundColor = accent.cgColor
             label.textColor = Theme.text
+            summaryLabel.textColor = attention ? Theme.amberText : Theme.text2
+            chevron.contentTintColor = Theme.text2
         }
     }
 
+    private func renderSummary() {
+        summaryLabel.stringValue = summary.text
+        dots.forEach { $0.removeFromSuperlayer() }
+        dots = []
+        // Status dots only when collapsed (the tiles themselves show it otherwise).
+        if group.collapsed {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                for s in summary.states {
+                    let d = CALayer()
+                    d.backgroundColor = Theme.color(for: s).cgColor
+                    layer?.addSublayer(d)
+                    dots.append(d)
+                }
+            }
+        }
+        updateColors()
+        needsLayout = true
+    }
+
     func apply(zoom: CGFloat) {
-        layer?.cornerRadius = 26 * zoom
+        self.zoom = zoom
+        layer?.cornerRadius = (group.collapsed ? 18 : 26) * zoom
         label.font = .systemFont(ofSize: 15 * zoom, weight: .semibold)
-        swatch.frame = CGRect(x: 20 * zoom, y: 18 * zoom, width: 10 * zoom, height: 10 * zoom)
-        swatch.cornerRadius = 3 * zoom
-        label.frame = NSRect(x: 38 * zoom, y: 13 * zoom, width: max(0, bounds.width - 60 * zoom), height: 20 * zoom)
+        summaryLabel.font = .systemFont(ofSize: 12 * zoom, weight: .medium)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let z = zoom
+        let h = FrameGroup.headerHeight * z
+        let midY = h / 2
+        chevron.frame = NSRect(x: 16 * z, y: midY - 6 * z, width: 12 * z, height: 12 * z)
+        swatch.frame = CGRect(x: 36 * z, y: midY - 5 * z, width: 10 * z, height: 10 * z)
+        swatch.cornerRadius = 3 * z
+        let dotsW = CGFloat(dots.count) * 12 * z
+        let summaryW = min(max(0, bounds.width * 0.45), summaryLabel.attributedStringValue.size().width + 8 * z)
+        let right = bounds.width - 20 * z
+        summaryLabel.frame = NSRect(x: right - summaryW, y: midY - 9 * z, width: summaryW, height: 18 * z)
+        for (i, d) in dots.enumerated() {
+            let x = right - summaryW - 8 * z - dotsW + CGFloat(i) * 12 * z
+            d.frame = CGRect(x: x, y: midY - 4 * z, width: 8 * z, height: 8 * z)
+            d.cornerRadius = 4 * z
+        }
+        let labelX = 54 * z
+        label.frame = NSRect(x: labelX, y: midY - 10 * z, width: max(0, right - summaryW - dotsW - 16 * z - labelX), height: 20 * z)
+    }
+
+    // MARK: Hit testing: title strip and edges are interactive; the body passes through.
+
+    private var edge: CGFloat { 8 }
+
+    private func zone(_ p: NSPoint) -> Mode? {
+        let headerH = FrameGroup.headerHeight * zoom
+        if group.collapsed { return bounds.contains(p) ? .move : nil }
+        let r = p.x >= bounds.width - edge, b = p.y >= bounds.height - edge, l = p.x <= edge
+        if (r || b || l) && bounds.contains(p) { return .resize(right: r, bottom: b, left: l) }
+        if bounds.contains(p) && p.y < headerH { return .move }
+        return nil
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let sv = superview else { return nil }
-        let p = convert(point, from: sv)
-        // Only the title strip is interactive; the body passes through to the canvas.
-        return bounds.contains(p) && p.y < 44 * (canvas?.viewport.zoom ?? 1) ? self : nil
+        return zone(convert(point, from: sv)) != nil ? self : nil
+    }
+
+    override func resetCursorRects() {
+        guard !group.collapsed else { return }
+        let w = bounds.width, h = bounds.height
+        addCursorRect(NSRect(x: w - edge, y: 0, width: edge, height: h - edge), cursor: .resizeLeftRight)
+        addCursorRect(NSRect(x: 0, y: 0, width: edge, height: h - edge), cursor: .resizeLeftRight)
+        addCursorRect(NSRect(x: edge, y: h - edge, width: w - edge * 2, height: edge), cursor: .resizeUpDown)
+        addCursorRect(NSRect(x: w - edge, y: h - edge, width: edge, height: edge), cursor: TileView.diagonal(nwse: true))
+        addCursorRect(NSRect(x: 0, y: h - edge, width: edge, height: edge), cursor: TileView.diagonal(nwse: false))
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        window?.invalidateCursorRects(for: self)
     }
 
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 { canvas?.controller?.renameFrame(group.id); return }
+        let p = convert(event.locationInWindow, from: nil)
+        let ctl = canvas?.controller
+        if chevron.frame.insetBy(dx: -10 * zoom, dy: -10 * zoom).contains(p) { ctl?.toggleCollapsed(group.id); return }
+        if event.clickCount == 2 {
+            if group.collapsed { ctl?.toggleCollapsed(group.id) } else { ctl?.renameFrame(group.id) }
+            return
+        }
+        mode = zone(p) ?? .move
         dragStart = event.locationInWindow
         frameAtStart = group.frame
     }
@@ -575,12 +679,26 @@ final class FrameGroupView: NSView {
         guard let s = dragStart, let canvas else { return }
         let dx = (event.locationInWindow.x - s.x) / canvas.viewport.zoom
         let dy = -(event.locationInWindow.y - s.y) / canvas.viewport.zoom
-        let target = CanvasView.snap(CGPoint(x: frameAtStart.minX + dx, y: frameAtStart.minY + dy))
-        canvas.controller?.moveFrame(group.id, to: target, persist: false)
+        switch mode {
+        case .move:
+            let target = CanvasView.snap(CGPoint(x: frameAtStart.minX + dx, y: frameAtStart.minY + dy))
+            canvas.controller?.moveFrame(group.id, to: target, persist: false)
+        case .resize(let r, let b, let l):
+            var f = frameAtStart
+            if r { f.size.width = frameAtStart.width + dx }
+            if b { f.size.height = frameAtStart.height + dy }
+            if l { f.origin.x = frameAtStart.minX + dx; f.size.width = frameAtStart.width - dx }
+            canvas.controller?.resizeFrame(group.id, to: f, persist: false)
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        if dragStart != nil { canvas?.controller?.moveFrame(group.id, to: group.frame.origin, persist: true) }
+        if dragStart != nil {
+            switch mode {
+            case .move: canvas?.controller?.moveFrame(group.id, to: group.frame.origin, persist: true)
+            case .resize: canvas?.controller?.resizeFrame(group.id, to: group.frame, persist: true)
+            }
+        }
         dragStart = nil
     }
 

@@ -72,7 +72,11 @@ final class Store: ObservableObject {
         var loaded: [Board] = []
         if let files = try? fm.contentsOfDirectory(at: PitwallPaths.boardsDir, includingPropertiesForKeys: nil) {
             for f in files where f.pathExtension == "json" {
-                if let d = try? Data(contentsOf: f), let b = try? Wire.decoder.decode(Board.self, from: d) {
+                if var b = try? Wire.decoder.decode(Board.self, from: (try? Data(contentsOf: f)) ?? Data()) {
+                    // Older boards: frames owned whatever sat inside them.
+                    for i in b.tiles.indices where b.tiles[i].frameGroupID == nil {
+                        if let fr = b.frames.first(where: { $0.frame.contains(b.tiles[i].frame) }) { b.tiles[i].frameGroupID = fr.id }
+                    }
                     loaded.append(b)
                 }
             }

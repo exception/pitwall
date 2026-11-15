@@ -10,7 +10,7 @@ final class CanvasController: NSObject {
     weak var model: AppModel?
 
     private(set) var tileViews: [String: TileView] = [:]
-    private var frameViews: [String: FrameGroupView] = [:]
+    var frameViews: [String: FrameGroupView] = [:]
     private var renderedBoardID: String?
     private(set) var focusedTileID: String?
     private var tickTimer: Timer?
@@ -76,6 +76,7 @@ final class CanvasController: NSObject {
                 frameViews[f.id] = v
                 canvas.framesLayer.addSubview(v)
             }
+            frameViews[f.id]?.summary = summary(of: f.id)
         }
         layoutAll(live: false)
         updateAttentionBadge()
@@ -102,7 +103,7 @@ final class CanvasController: NSObject {
                 continue
             }
             let r = canvas.toView(t.frame)
-            let onScreen = r.intersects(visible)
+            let onScreen = r.intersects(visible) && !isCollapsedAway(t, in: board)
             v.frame = r
             v.isHidden = !onScreen
             v.apply(zoom: z, live: live)
@@ -111,7 +112,7 @@ final class CanvasController: NSObject {
         canvas.framesLayer.isHidden = full != nil
         for f in board.frames {
             guard let v = frameViews[f.id] else { continue }
-            v.frame = canvas.toView(f.frame)
+            v.frame = canvas.toView(f.visibleFrame)
             v.apply(zoom: z)
         }
         CATransaction.commit()
@@ -122,7 +123,7 @@ final class CanvasController: NSObject {
     func tileView(_ id: String) -> TileView? { tileViews[id] }
 
     func tileID(at viewPoint: CGPoint) -> String? {
-        board.tiles.sorted { $0.z > $1.z }.first { canvas.toView($0.frame).contains(viewPoint) }?.id
+        board.tiles.sorted { $0.z > $1.z }.first { !isCollapsedAway($0, in: board) && canvas.toView($0.frame).contains(viewPoint) }?.id
     }
 
     func viewportChanged(_ v: Viewport) {
@@ -224,9 +225,12 @@ final class CanvasController: NSObject {
     func addTile(_ t: Tile, at: CGPoint? = nil, focus: Bool = true, fly: Bool = true) -> String {
         var t = t
         let size = t.frame.size == .zero ? Self.defaultSize(t.kind) : t.frame.size
-        t.frame = CGRect(origin: at.map { CanvasView.snap($0) } ?? freeSpot(size: size), size: size)
+        let place = placement(for: size, at: at)
+        t.frame = CGRect(origin: place.origin, size: size)
+        t.frameGroupID = place.frameID
         t.z = board.maxZ + 1
         store.update { $0.tiles.append(t) }
+        if let fid = place.frameID { fitFrame(fid) }
         reconcile()
         if focus { self.focus(tileID: t.id, makeFirstResponder: true) }
         if fly, !canvas.visibleWorldRect.insetBy(dx: 40, dy: 40).contains(t.frame) { flyTo(tileID: t.id, fill: false) }
@@ -350,7 +354,7 @@ final class CanvasController: NSObject {
         return ""
     }
 
-    func newFrame(around ids: [String]? = nil) {
+    func newFrame(around ids: [String]? = nil, prompt askName: Bool = true) {
         let tiles = (ids ?? focusedTileID.map { [$0] } ?? []).compactMap { board.tile($0) }
         var rect: CGRect
         if tiles.isEmpty {
@@ -362,9 +366,13 @@ final class CanvasController: NSObject {
         }
         var f = FrameGroup(title: "New frame", frame: CanvasView.snap(rect))
         f.colorIndex = board.frames.count
-        store.update { $0.frames.append(f) }
+        let members = Set(tiles.map(\.id))
+        store.update { b in
+            b.frames.append(f)
+            for i in b.tiles.indices where members.contains(b.tiles[i].id) { b.tiles[i].frameGroupID = f.id }
+        }
         reconcile()
-        renameFrame(f.id)
+        if askName { renameFrame(f.id) }
     }
 
     // MARK: Moving, closing, focus
@@ -381,19 +389,21 @@ final class CanvasController: NSObject {
             v.apply(zoom: canvas.viewport.zoom, live: !persist)
         }
         canvas.linksView.refresh()
+        if persist { updateMembership(id) } else { highlightDropFrame(id) }
     }
 
     func moveFrame(_ id: String, to origin: CGPoint, persist: Bool) {
         guard let f = board.frames.first(where: { $0.id == id }) else { return }
         let dx = origin.x - f.frame.minX, dy = origin.y - f.frame.minY
         guard dx != 0 || dy != 0 || persist else { return }
-        let inside = board.tiles.filter { f.frame.contains($0.frame) }.map(\.id)
+        let inside = board.members(of: id).map(\.id)
         store.update { b in
             if let i = b.frames.firstIndex(where: { $0.id == id }) { b.frames[i].frame.origin = origin }
             for j in b.tiles.indices where inside.contains(b.tiles[j].id) {
                 b.tiles[j].frame.origin.x += dx; b.tiles[j].frame.origin.y += dy
             }
         }
+        layoutSubagents()
         reconcile()
         frameViews[id]?.update(board.frames.first { $0.id == id }!)
     }
@@ -446,6 +456,7 @@ final class CanvasController: NSObject {
     /// Center stage: fly to the tile and fit it, never above 100% so the
     /// terminal font stays at its normal size.
     func flyTo(tileID: String, fill: Bool) {
+        revealTile(tileID)
         guard let t = board.tile(tileID) else { return }
         if fullScreenTileID != nil && fullScreenTileID != tileID { exitFullScreen() }
         let insets = model?.canvasInsets ?? NSEdgeInsets(top: 80, left: 300, bottom: 140, right: 40)
@@ -498,8 +509,10 @@ final class CanvasController: NSObject {
     }
 
     func zoomToFit() {
-        guard let first = board.tiles.first else { return }
-        let all = board.tiles.reduce(first.frame) { $0.union($1.frame) }
+        // What's actually drawn: visible tiles plus frames (collapsed ones as their strip).
+        let rects = board.tiles.filter { !isCollapsedAway($0, in: board) }.map(\.frame) + board.frames.map(\.visibleFrame)
+        guard let first = rects.first else { return }
+        let all = rects.reduce(first) { $0.union($1) }
         let insets = model?.canvasInsets ?? NSEdgeInsets(top: 80, left: 300, bottom: 140, right: 40)
         canvas.animate(to: canvas.viewport(fitting: all.insetBy(dx: -40, dy: -40), maxZoom: 1, insets: insets))
     }
@@ -649,7 +662,11 @@ final class CanvasController: NSObject {
     func canvasMenu(at p: CGPoint) -> NSMenu? {
         let w = canvas.toWorld(p)
         let m = NSMenu()
-        m.addItem(MenuAction("New agent…") { [weak self] in self?.model?.focusDispatch() })
+        m.addItem(MenuAction("New agent…") { [weak self] in
+            guard let self else { return }
+            self.pendingPlacement = (w, self.frame(at: w)?.id, Date().addingTimeInterval(120))
+            self.model?.focusDispatch()
+        })
         m.addItem(MenuAction("New terminal") { [weak self] in _ = self?.newTerminal(at: w) })
         m.addItem(MenuAction("New note") { [weak self] in self?.newNote(at: w) })
         m.addItem(MenuAction("New browser") { [weak self] in self?.open(target: "http://localhost:3000", at: w) })
@@ -669,11 +686,17 @@ final class CanvasController: NSObject {
 
     func frameMenu(_ id: String) -> NSMenu {
         let m = NSMenu()
+        let collapsed = board.frames.first { $0.id == id }?.collapsed ?? false
+        m.addItem(MenuAction("New agent here…") { [weak self] in self?.newAgentInFrame(id) })
+        m.addItem(MenuAction("New terminal here") { [weak self] in self?.newTerminalInFrame(id) })
+        m.addItem(.separator())
+        m.addItem(MenuAction(collapsed ? "Expand" : "Collapse") { [weak self] in self?.toggleCollapsed(id) })
+        m.addItem(MenuAction("Zoom to frame") { [weak self] in self?.zoomToFrame(id) })
+        m.addItem(MenuAction("Tidy tiles") { [weak self] in self?.tidyFrame(id) })
         m.addItem(MenuAction("Rename…") { [weak self] in self?.renameFrame(id) })
-        m.addItem(MenuAction("Delete frame (keep tiles)") { [weak self] in
-            self?.store.update { $0.frames.removeAll { $0.id == id } }
-            self?.reconcile()
-        })
+        m.addItem(.separator())
+        m.addItem(MenuAction("Close all tiles in frame…") { [weak self] in self?.closeTilesInFrame(id) })
+        m.addItem(MenuAction("Delete frame (keep tiles)") { [weak self] in self?.deleteFrame(id) })
         return m
     }
 
@@ -939,7 +962,12 @@ final class CanvasController: NSObject {
         rect = CanvasView.snap(rect)
         var f = FrameGroup(title: "Fan-out · " + ClaudeIntegration.name(fromTask: task), frame: rect)
         f.colorIndex = board.frames.count
-        store.update { $0.frames.append(f) }
+        let members = Set(ids + [cmpID])
+        store.update { b in
+            b.frames.append(f)
+            for i in b.tiles.indices where members.contains(b.tiles[i].id) { b.tiles[i].frameGroupID = f.id }
+        }
+        fitFrame(f.id)
         reconcile()
         zoomToFit()
     }
@@ -1161,6 +1189,8 @@ final class CanvasController: NSObject {
     var prSeenComments: [String: Set<String>] = [:]
     /// Dev servers: recent automatic restarts (for crash-loop backoff).
     var serverRestarts: [String: [Date]] = [:]
+    /// Where the next new tile goes (set by "New agent here" and the canvas menu).
+    var pendingPlacement: (point: CGPoint?, frameID: String?, expires: Date)?
     private var scanInFlight = Set<String>()
 
     static let imagePattern = try! NSRegularExpression(

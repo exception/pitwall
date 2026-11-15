@@ -117,6 +117,11 @@ struct FrameGroup: Codable, Identifiable, Equatable {
     var frame: CGRect
     var colorIndex: Int = 0
     var collapsed = false
+
+    /// Height of the title strip, and of the whole frame when collapsed.
+    static let headerHeight: CGFloat = 56
+    /// Where the frame is drawn: just its title strip when collapsed.
+    var visibleFrame: CGRect { collapsed ? CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: Self.headerHeight) : frame }
 }
 
 struct Viewport: Codable, Equatable {
@@ -139,6 +144,7 @@ struct Board: Codable, Identifiable, Equatable {
     var layouts: [SavedLayout]?
 
     func tile(_ id: String) -> Tile? { tiles.first { $0.id == id } }
+    func members(of frameID: String) -> [Tile] { tiles.filter { $0.frameGroupID == frameID } }
     var maxZ: Int { tiles.map(\.z).max() ?? 0 }
 }
 

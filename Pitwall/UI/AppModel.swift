@@ -38,8 +38,8 @@ final class AppModel: ObservableObject {
     @Published var searchOpen = false
     let search = SearchModel()
     @Published var inboxSelection: String?
-    @Published var sidebarVisible = UserDefaults.standard.object(forKey: "sidebarVisible") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(sidebarVisible, forKey: "sidebarVisible") }
+    @Published var sidebarVisible = UserDefaults.pitwall.object(forKey: "sidebarVisible") as? Bool ?? true {
+        didSet { UserDefaults.pitwall.set(sidebarVisible, forKey: "sidebarVisible") }
     }
 
     var onPickerChange: (() -> Void)?

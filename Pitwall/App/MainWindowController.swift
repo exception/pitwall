@@ -28,7 +28,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.title = "Pitwall"
         window.isMovableByWindowBackground = false
         window.minSize = NSSize(width: 760, height: 520)
-        window.setFrameAutosaveName("PitwallMain")
+        if UserDefaults.pitwall === UserDefaults.standard { window.setFrameAutosaveName("PitwallMain") }
         window.tabbingMode = .disallowed
         super.init(window: window)
         window.delegate = self

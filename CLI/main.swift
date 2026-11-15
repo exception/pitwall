@@ -24,6 +24,8 @@ pitwall — control Pitwall from the terminal
   pitwall tile close <id>                   Close a tile
   pitwall tile focus <id>                   Fly the canvas to a tile
   pitwall tile move <id> <x> <y>            Move a tile (canvas points)
+  pitwall frame new [--title T] [TILE...]   Put tiles in a new frame
+  pitwall frame list | collapse <id> | expand <id>
   pitwall tile read <id> [--bytes N]        Print a tile's recent terminal output
   pitwall tile send <id> <text>             Type text into another terminal tile
   pitwall status <working|waiting|done|error|idle> [message]
@@ -79,6 +81,7 @@ func runTile(_ args: [String]) -> Int32 {
                 switch rest[i] {
                 case "--cwd": i += 1; a["cwd"] = rest[safe: i]
                 case "--title": i += 1; a["title"] = rest[safe: i]
+                case "--frame": i += 1; a["frame"] = rest[safe: i]
                 case "--": a["command"] = rest[(i + 1)...].map(shellQuote).joined(separator: " "); i = rest.count
                 default: break
                 }
@@ -258,6 +261,26 @@ case "watch", "server":
     a["command"] = cmd.joined(separator: " ")
     do { exit(Control.printResult(try Control.send(isServer ? "tile.server" : "tile.watch", args: a))) }
     catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
+case "frame":
+    guard let sub = rest.first else { fputs("frame new|list|collapse|expand\n", stderr); exit(2) }
+    do {
+        switch sub {
+        case "list": exit(Control.printResult(try Control.send("frame.list")))
+        case "collapse", "expand":
+            guard let id = rest[safe: 1] else { fputs("frame \(sub) <id>\n", stderr); exit(2) }
+            exit(Control.printResult(try Control.send("frame.\(sub)", args: ["id": id])))
+        case "new":
+            var a: [String: String] = [:], ids: [String] = []
+            var i = 1
+            while i < rest.count {
+                if rest[i] == "--title" { i += 1; a["title"] = rest[safe: i] } else { ids.append(rest[i]) }
+                i += 1
+            }
+            a["tiles"] = ids.joined(separator: ",")
+            exit(Control.printResult(try Control.send("frame.new", args: a)))
+        default: fputs("frame new|list|collapse|expand\n", stderr); exit(2)
+        }
+    } catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "search":
     guard !rest.isEmpty else { fputs("search <text|/regex/>\n", stderr); exit(2) }
     do { exit(Control.printResult(try Control.send("search", args: ["query": rest.joined(separator: " ")], timeout: 60))) }

@@ -176,7 +176,40 @@ scenario_boardtools() {
   stop_app
 }
 
-if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals handoff watch boardtools); fi
+frame_field() { $H frame list | python3 -c "import json,sys; print(next((str(f.get('$2')) for f in json.load(sys.stdin) if f['id']=='$1'), ''))"; }
+
+scenario_frames() {
+  echo "frames: membership, placement inside frames, collapse with status"
+  reset; start_app
+  local A=$($H tile new --cwd $PWD --title "Alpha"); local B=$($H tile new --cwd $PWD --title "Beta"); sleep 1.2
+  local F=$($H frame new --title "Feature X" $A); sleep 0.4
+  check "frame owns its tile" '[[ $(tile_field $A frame_id) == $F ]]'
+  check "other tile not a member" '[[ -z $(tile_field $B frame_id) ]]'
+  $H tile move $B 4000 0; sleep 0.3
+  $H tile focus $A; sleep 0.3
+  local C=$($H tile new --cwd $PWD --title "Gamma"); sleep 0.8
+  check "new tile next to a framed tile joins the frame" '[[ $(tile_field $C frame_id) == $F ]]'
+  local D=$($H tile new --cwd $PWD --title "Delta" --frame $F); sleep 0.8
+  check "'new terminal here' lands in the frame" '[[ $(tile_field $D frame_id) == $F ]]'
+  local fr=$(frame_field $F frame) dr=$(tile_field $D frame)
+  check "frame grew to contain its tiles" 'python3 -c "
+f=list(map(int,\"$fr\".split(\",\")));t=list(map(int,\"$dr\".split(\",\")))
+assert f[0]<=t[0] and f[1]<=t[1] and f[0]+f[2]>=t[0]+t[2] and f[1]+f[3]>=t[1]+t[3]"'
+  $H tile move $C 9000 9000; sleep 0.6
+  check "dragging a tile out leaves the frame" '[[ -z $(tile_field $C frame_id) ]]'
+  shot frames-expanded
+  PITWALL_TILE_ID=$D $H status waiting "Wants to run: npm test"; sleep 0.4
+  $H frame collapse $F; sleep 0.8
+  osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $PID) to true" -e 'delay 0.2' \
+    -e 'tell application "System Events" to keystroke "0" using {command down, shift down}' >/dev/null
+  sleep 1; shot frames-collapsed
+  check "frame collapsed" '[[ $(frame_field $F collapsed) == True ]]'
+  $H tile focus $D; sleep 0.8
+  check "focusing a hidden tile expands its frame" '[[ $(frame_field $F collapsed) == False ]]'
+  stop_app
+}
+
+if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status fullscreen approvals handoff watch boardtools frames); fi
 for s in $scenarios; do scenario_$s; done
 reset
 echo; [[ $FAILED == 0 ]] && echo "All UI scenarios passed. Screenshots: $OUT/" || { echo "Some UI scenarios FAILED. See $OUT/"; exit 1; }

@@ -5,7 +5,7 @@ import Combine
 /// canvas react immediately when a setting changes.
 final class Prefs: ObservableObject {
     static let shared = Prefs()
-    private let d = UserDefaults.standard
+    private let d = UserDefaults.pitwall
 
     private func bool(_ k: String, _ def: Bool) -> Bool { d.object(forKey: k) as? Bool ?? def }
     private func double(_ k: String, _ def: Double) -> Double { d.object(forKey: k) as? Double ?? def }
@@ -58,7 +58,7 @@ final class Prefs: ObservableObject {
     @Published var fontSize: Double { didSet { d.set(fontSize, forKey: "fontSize"); NotificationCenter.default.post(name: .pitwallTerminalConfig, object: nil) } }
 
     private init() {
-        let d = UserDefaults.standard
+        let d = UserDefaults.pitwall
         func b(_ k: String, _ v: Bool) -> Bool { d.object(forKey: k) as? Bool ?? v }
         appearance = d.string(forKey: "appearance") ?? "system"
         defaultAgent = d.string(forKey: "defaultAgent") ?? "claude"
@@ -89,4 +89,16 @@ final class Prefs: ObservableObject {
 extension Notification.Name {
     static let pitwallAppearance = Notification.Name("pitwall.appearance")
     static let pitwallTerminalConfig = Notification.Name("pitwall.terminalConfig")
+}
+
+extension UserDefaults {
+    /// App preferences. Test instances (PITWALL_HOME set) get their own
+    /// domain so they never change the real app's settings.
+    static let pitwall: UserDefaults = {
+        if let home = ProcessInfo.processInfo.environment["PITWALL_HOME"], !home.isEmpty,
+           let d = UserDefaults(suiteName: "dev.pitwall.app.isolated") {
+            return d
+        }
+        return .standard
+    }()
 }

@@ -92,6 +92,7 @@ final class ControlServer {
         if let v = t.watchCommand { o["command"] = .string(v) }
         if let v = t.prRef { o["pr"] = .string(v) }
         if t.keepAlive == true { o["server"] = .bool(true) }
+        if let f = t.frameGroupID { o["frame_id"] = .string(f) }
         o["frame"] = .string([t.frame.minX, t.frame.minY, t.frame.width, t.frame.height].map { String(Int($0)) }.joined(separator: ","))
         return .object(o)
     }
@@ -118,6 +119,7 @@ final class ControlServer {
         case "tile.new":
             ensureBoard(of: from)
             let cmd = args["command"]
+            if let fid = args["frame"] { ctl.pendingPlacement = (nil, fid, Date().addingTimeInterval(5)) }
             let id = ctl.newTerminal(cwd: args["cwd"], command: cmd, at: near(from), name: args["title"])
             if let from { ctl.addLink(from: from, to: id, kind: .spawned) }
             return ok(.string(id))
@@ -174,6 +176,29 @@ final class ControlServer {
             guard let cmd = args["command"], !cmd.isEmpty else { return fail("command required") }
             ensureBoard(of: from)
             return ok(.string(ctl.newServer(command: cmd, cwd: args["cwd"], at: near(from), from: from)))
+
+        case "frame.new":
+            let ids = (args["tiles"] ?? "").split(separator: ",").map(String.init).filter { store.findTile($0) != nil }
+            let before = Set(ctl.board.frames.map(\.id))
+            ctl.newFrame(around: ids.isEmpty ? nil : ids, prompt: false)
+            guard let f = ctl.board.frames.first(where: { !before.contains($0.id) }) else { return fail("couldn't create frame") }
+            if let t = args["title"], !t.isEmpty {
+                store.update { b in if let i = b.frames.firstIndex(where: { $0.id == f.id }) { b.frames[i].title = t } }
+                ctl.reconcile()
+            }
+            return ok(.string(f.id))
+
+        case "frame.list":
+            return ok(.array(ctl.board.frames.map { f in
+                .object(["id": .string(f.id), "title": .string(f.title), "collapsed": .bool(f.collapsed),
+                         "frame": .string([f.frame.minX, f.frame.minY, f.frame.width, f.frame.height].map { String(Int($0)) }.joined(separator: ",")),
+                         "members": .string(ctl.board.members(of: f.id).map(\.id).joined(separator: ","))])
+            }))
+
+        case "frame.collapse", "frame.expand":
+            guard let id = args["id"], ctl.board.frames.contains(where: { $0.id == id }) else { return fail("no such frame") }
+            ctl.setCollapsed(id, req.cmd == "frame.collapse")
+            return ok()
 
         case "tile.move":
             guard let id = req.tileID, let t = store.findTile(id)?.tile, let x = Double(args["x"] ?? ""), let y = Double(args["y"] ?? "") else {
