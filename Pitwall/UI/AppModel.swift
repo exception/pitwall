@@ -11,6 +11,10 @@ struct Toast: Identifiable, Equatable {
     var tileID: String?
 }
 
+final class ZoomLevel: ObservableObject {
+    @Published var value: CGFloat = 1
+}
+
 final class DispatchDraft: ObservableObject {
     @Published var text = ""
 }
@@ -20,7 +24,14 @@ final class AppModel: ObservableObject {
     weak var controller: CanvasController?
     let store = Store.shared
 
-    @Published var zoom: CGFloat = 1
+    /// Zoom lives in its own object (only the zoom pill watches it), and only
+    /// whole-percent changes are published, so zooming doesn't re-render
+    /// every overlay on every frame.
+    let zoomLevel = ZoomLevel()
+    var zoom: CGFloat {
+        get { zoomLevel.value }
+        set { if Int((newValue * 100).rounded()) != Int((zoomLevel.value * 100).rounded()) { zoomLevel.value = newValue } }
+    }
     @Published var focusedTileID: String?
     @Published var toasts: [Toast] = []
     @Published var pickerPoint: (world: CGPoint, view: CGPoint)? = nil {

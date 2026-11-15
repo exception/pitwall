@@ -189,6 +189,7 @@ struct ToolbarPill: View {
 
 struct TrailingControls: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var zoomLevel: ZoomLevel
 
     var body: some View {
         HStack(spacing: 8) {
@@ -208,7 +209,7 @@ struct TrailingControls: View {
                 .help("Open the Inbox (⌘I) · ⌘J jumps to the next agent")
             }
             Button { model.controller?.zoomToFit() } label: {
-                Text("\(Int((model.zoom * 100).rounded()))%")
+                Text("\(Int((zoomLevel.value * 100).rounded()))%")
                     .font(.system(size: 12).monospacedDigit())
                     .frame(width: 54, height: 40)
                     .pitwallGlass(cornerRadius: 20)

@@ -116,8 +116,9 @@ final class CanvasView: NSView {
         }
         let start = viewport
         let t0 = CACurrentMediaTime()
-        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
+        cameraLink?.invalidate()
+        cameraStep = { [weak self] in
+            guard let self else { return true }
             let t = min(1, (CACurrentMediaTime() - t0) / duration)
             // Quick hops ease out; long camera moves ease in and out.
             let e = duration > 0.6 ? (t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2) : 1 - pow(1 - t, 3)
@@ -130,9 +131,23 @@ final class CanvasView: NSView {
             v.origin = CGPoint(x: c.x - self.bounds.width / 2 / v.zoom, y: c.y - self.bounds.height / 2 / v.zoom)
             let done = t >= 1
             self.setViewport(done ? target : v, live: !done, persist: done)
-            if done { timer.invalidate(); self.controller?.layoutAll(live: false) }
+            if done { self.controller?.layoutAll(live: false) }
+            return done
         }
-        RunLoop.main.add(timer, forMode: .common)
+        // Step once per display refresh, in sync with the screen.
+        let link = displayLink(target: self, selector: #selector(cameraTick(_:)))
+        link.add(to: .main, forMode: .common)
+        cameraLink = link
+    }
+
+    private var cameraLink: CADisplayLink?
+    private var cameraStep: (() -> Bool)?
+
+    @objc private func cameraTick(_ link: CADisplayLink) {
+        if cameraStep?() ?? true {
+            link.invalidate()
+            if cameraLink === link { cameraLink = nil; cameraStep = nil }
+        }
     }
 
     func viewport(fitting world: CGRect, maxZoom: CGFloat = 1, insets: NSEdgeInsets) -> Viewport {

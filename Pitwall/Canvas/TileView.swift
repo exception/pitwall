@@ -223,22 +223,37 @@ final class TileView: NSView {
     // MARK: Layout
 
     /// Applies zoom and lays out chrome. `live` = mid-gesture.
+    private var symbolsStale = false
+    private var liveZoom = false
+    private var timelineSymbolZoom: CGFloat = 0
+    private var gallerySymbolKey: (zoom: CGFloat, count: Int) = (0, -1)
+
     func apply(zoom: CGFloat, live: Bool) {
+        liveZoom = live
         let changed = self.zoom != zoom
         self.zoom = zoom
         if changed {
             titleField.font = .systemFont(ofSize: 14 * zoom, weight: .semibold)
             subtitleField.font = .monospacedSystemFont(ofSize: 11 * zoom, weight: .regular)
             metaField.attributedStringValue = metaString()
+            updateRing()
+        }
+        // Header buttons only show on hover; re-rasterize them once zooming settles.
+        if (changed || symbolsStale) && !live {
             for b in [closeButton, zoomButton, fullButton] {
                 b.image = b.image?.withSymbolConfiguration(.init(pointSize: 11 * zoom, weight: .semibold))
             }
-            updateRing()
+            symbolsStale = false
+        } else if changed {
+            symbolsStale = true
         }
         let card = showsCard
         statusCard.isHidden = !card
         self.card.isHidden = card
-        content.setVisible(!card && !isHidden)
+        // Pausing a terminal is expensive mid-zoom; the card covers it anyway,
+        // so only pause it once zooming settles. (Resuming is immediate.)
+        let visible = !card && !isHidden
+        if visible || !live { content.setVisible(visible) }
         content.apply(zoom: zoom, live: live)
         layoutChrome()
     }
@@ -274,18 +289,26 @@ final class TileView: NSView {
         zoomButton.frame = NSRect(x: right - btn * 3 - 8 * zoom, y: (h - btn) / 2, width: btn, height: btn)
         zoomButton.isHidden = isFullScreen
         timelineButton.frame = NSRect(x: (isFullScreen ? fullButton.frame.minX : zoomButton.frame.minX) - btn - 4 * zoom, y: (h - btn) / 2, width: btn, height: btn)
-        timelineButton.image = timelineButton.image?.withSymbolConfiguration(.init(pointSize: 11 * zoom, weight: .semibold))
+        if !liveZoom && timelineSymbolZoom != zoom {
+            timelineButton.image = timelineButton.image?.withSymbolConfiguration(.init(pointSize: 11 * zoom, weight: .semibold))
+            timelineSymbolZoom = zoom
+        }
 
         let metaW = min(metaField.attributedStringValue.size().width + 4, b.width * 0.45)
         let chromeVisible = hovering || isFullScreen
         var metaRight = chromeVisible ? (tile.kind == .agent ? timelineButton.frame.minX : (isFullScreen ? fullButton.frame.minX : zoomButton.frame.minX)) - 8 * zoom : right
         if !galleryButton.isHidden {
             let count = tile.images?.count ?? 0
+            if liveZoom, gallerySymbolKey.zoom != zoom || gallerySymbolKey.count != count {
+                // Keep the old rendering mid-zoom; refreshed when zooming settles.
+            } else if gallerySymbolKey.zoom != zoom || gallerySymbolKey.count != count {
+                gallerySymbolKey = (zoom, count)
             galleryButton.attributedTitle = NSAttributedString(string: " \(count)", attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 11 * zoom, weight: .semibold), .foregroundColor: Theme.text2])
             galleryButton.image = NSImage(systemSymbolName: "photo.on.rectangle", accessibilityDescription: nil)?
                 .withSymbolConfiguration(.init(pointSize: 11 * zoom, weight: .medium))
             galleryButton.contentTintColor = Theme.text2
+            }
             let gw = (36 + CGFloat(String(count).count) * 7) * zoom
             galleryButton.frame = NSRect(x: metaRight - gw, y: (h - 22 * zoom) / 2, width: gw, height: 22 * zoom)
             galleryButton.layer?.cornerRadius = 11 * zoom

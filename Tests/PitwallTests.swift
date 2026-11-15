@@ -92,4 +92,28 @@ final class PitwallTests: XCTestCase {
         XCTAssertFalse(CanvasController.isAgentProcess("zsh"))
         XCTAssertFalse(CanvasController.isAgentProcess("node"))
     }
+
+    func testScrollLatchKeepsGestureOwner() {
+        final class V {}
+        let canvas = V(), tile = V()
+        var latch = ScrollLatch<V>()
+        let t0 = Date()
+        func ev(_ p: NSEvent.Phase, _ m: NSEvent.Phase = []) -> ScrollLatch<V>.Event { .init(precise: true, phase: p, momentum: m) }
+        // Pan starts on the canvas, drifts over a tile, momentum continues over it.
+        XCTAssertTrue(latch.owner(for: ev(.began), under: canvas, now: t0) === canvas)
+        XCTAssertTrue(latch.owner(for: ev(.changed), under: tile, now: t0) === canvas)
+        XCTAssertTrue(latch.owner(for: ev(.ended), under: tile, now: t0) === canvas)
+        XCTAssertTrue(latch.owner(for: ev([], .began), under: tile, now: t0) === canvas)
+        XCTAssertTrue(latch.owner(for: ev([], .changed), under: tile, now: t0) === canvas)
+        XCTAssertTrue(latch.owner(for: ev([], .ended), under: tile, now: t0) === canvas)
+        // A new gesture that starts on the tile belongs to the tile.
+        XCTAssertTrue(latch.owner(for: ev(.began), under: tile, now: t0) === tile)
+        XCTAssertTrue(latch.owner(for: ev(.changed), under: canvas, now: t0) === tile)
+        // Mouse wheel: ticks close together stay with the first target; a pause releases it.
+        let wheel = ScrollLatch<V>.Event(precise: false, phase: [], momentum: [])
+        var w = ScrollLatch<V>()
+        XCTAssertTrue(w.owner(for: wheel, under: canvas, now: t0) === canvas)
+        XCTAssertTrue(w.owner(for: wheel, under: tile, now: t0.addingTimeInterval(0.1)) === canvas)
+        XCTAssertTrue(w.owner(for: wheel, under: tile, now: t0.addingTimeInterval(0.6)) === tile)
+    }
 }

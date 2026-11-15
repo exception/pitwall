@@ -85,7 +85,10 @@ final class CanvasController: NSObject {
     func layoutAll(live: Bool) {
         let z = canvas.viewport.zoom
         let visible = canvas.bounds.insetBy(dx: -200, dy: -200)
-        CATransaction.begin()
+        // Mid-animation, ride the frame's implicit transaction: an explicit
+        // begin/commit here forces an extra synchronous commit (and waits on
+        // the terminals' GPU work) on every frame.
+        if !live { CATransaction.begin() }
         CATransaction.setDisableActions(true)
         let full = fullScreenTileID
         for t in board.tiles {
@@ -115,7 +118,7 @@ final class CanvasController: NSObject {
             v.frame = canvas.toView(f.visibleFrame)
             v.apply(zoom: z)
         }
-        CATransaction.commit()
+        if !live { CATransaction.commit() }
         canvas.linksView.refresh()
         model?.zoom = z
     }

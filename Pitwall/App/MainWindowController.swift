@@ -13,6 +13,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var inboxHost: NSView?
     private var inboxMonitor: Any?
     private var searchHost: NSView?
+    private var scrollMonitor: Any?
+    private var scrollLatch = ScrollLatch<NSView>()
     private var trailingHost: NSView?
     private var dispatchHost: NSView?
     private var sidebarLeading: NSLayoutConstraint!
@@ -79,6 +81,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         }.store(in: &bag)
         model.search.controller = controller
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
+            guard let self, e.window === self.window else { return e }
+            return self.routeScroll(e)
+        }
         model.$searchOpen.dropFirst().sink { [weak self] open in
             guard let self, let content = self.window?.contentView else { return }
             self.searchHost?.removeFromSuperview()
@@ -120,7 +126,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let sidebar = host(SidebarView(model: model))
         let toolbar = host(ToolbarPill(model: model))
-        let trailing = host(TrailingControls(model: model))
+        let trailing = host(TrailingControls(model: model, zoomLevel: model.zoomLevel))
         let dispatch = host(DispatchBar(model: model, draft: model.draft))
         let toasts = host(ToastStack(model: model))
         let inbox = host(InboxView(model: model))
@@ -203,6 +209,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         NSAnimationContext.runAnimationGroup { $0.duration = 0.12; h.animator().alphaValue = 1 }
     }
 
+    // MARK: Scroll latching
+
+    /// AppKit sends every scroll event to whatever is under the cursor, so a
+    /// canvas pan that drifts over a tile would suddenly scroll the tile.
+    /// Instead, whoever is under the cursor when a gesture begins keeps it
+    /// until it ends (momentum included). Mouse wheels have no gestures, so
+    /// ticks less than 0.3 s apart count as one scroll.
+    private func routeScroll(_ e: NSEvent) -> NSEvent? {
+        guard let content = window?.contentView else { return e }
+        let p = content.superview.map { $0.convert(e.locationInWindow, from: nil) } ?? e.locationInWindow
+        let under = content.hitTest(p)
+        let owner = scrollLatch.owner(for: .init(precise: e.hasPreciseScrollingDeltas, phase: e.phase, momentum: e.momentumPhase),
+                                      under: under, now: Date())
+        if let owner, owner !== under, owner.window === window {
+            owner.scrollWheel(with: e)
+            return nil
+        }
+        return e
+    }
+
     // MARK: Window
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -213,6 +239,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Closing the window hides it; agents keep running.
         sender.orderOut(nil)
         return false
+    }
+}
+
+/// Decides who gets a scroll event. AppKit sends each one to whatever is
+/// under the cursor, so a canvas pan that drifts over a tile would suddenly
+/// scroll the tile. Instead, whatever is under the cursor when a gesture
+/// begins keeps it until the gesture (and its momentum) ends. Mouse wheels
+/// have no gestures: ticks less than 0.3 s apart count as one scroll.
+struct ScrollLatch<Target: AnyObject> {
+    struct Event {
+        var precise: Bool
+        var phase: NSEvent.Phase
+        var momentum: NSEvent.Phase
+    }
+    private weak var current: Target?
+    private var wheelUntil = Date.distantPast
+
+    /// The target that should receive this event.
+    mutating func owner(for e: Event, under: Target?, now: Date) -> Target? {
+        let starts = e.precise ? (e.phase.contains(.began) || e.phase.contains(.mayBegin)) : now > wheelUntil
+        if !e.precise { wheelUntil = now.addingTimeInterval(0.3) }
+        if starts || current == nil { current = under }
+        let owner = current
+        if e.momentum.contains(.ended) || e.momentum.contains(.cancelled) || e.phase.contains(.cancelled) { current = nil }
+        return owner
     }
 }
 
