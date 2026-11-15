@@ -171,11 +171,22 @@ enum ClaudeIntegration {
     }
 
     /// Shell command that starts Claude Code wired into Pitwall.
-    static func command(task: String?) -> String {
-        var cmd = "claude --settings \(shellQuote(settingsFile.path)) --mcp-config \(shellQuote(mcpFile.path))"
+    static func command(task: String?, images: [URL] = []) -> String {
+        var cmd = "claude --settings \(shellQuote(settingsFile.path))"
+        for dir in Set(images.map { $0.deletingLastPathComponent().path }).sorted() { cmd += " --add-dir " + shellQuote(dir) }
+        cmd += " --mcp-config \(shellQuote(mcpFile.path))"
+        let prompt = prompt(task: task ?? "", images: images)
         // `--mcp-config` takes several files, so end options before the task.
-        if let task, !task.isEmpty { cmd += " -- " + shellQuote(task) }
+        if !prompt.isEmpty { cmd += " -- " + shellQuote(prompt) }
         return cmd
+    }
+
+    /// The task with attached image paths appended, so the agent reads them.
+    static func prompt(task: String, images: [URL]) -> String {
+        guard !images.isEmpty else { return task }
+        let list = images.map { "- " + $0.path }.joined(separator: "\n")
+        let head = images.count == 1 ? "Attached image (read it before starting):" : "Attached images (read them before starting):"
+        return (task.isEmpty ? "" : task + "\n\n") + head + "\n" + list
     }
 
     /// Short auto-name from a task: first few meaningful words, capitalized.

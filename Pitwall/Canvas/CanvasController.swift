@@ -170,6 +170,7 @@ final class CanvasController: NSObject {
             let surface = TerminalSurfaceView(launch: .init(command: cmd, workingDirectory: t.cwd, env: env), zoom: 1)
             let session = TerminalSession(tileID: t.id, controller: self)
             surface.delegate = session
+            surface.imagePasteSendsControlV = t.kind == .agent
             sessions[t.id] = session
             return TerminalTileContent(surface: surface)
         case .browser:
@@ -274,7 +275,8 @@ final class CanvasController: NSObject {
 
     /// Starts a Claude Code agent on a task, optionally in a new worktree.
     @discardableResult
-    func newAgent(task: String, repo: String?, worktree: Bool, agent: AgentKind, at: CGPoint? = nil, parent: String? = nil, name: String? = nil) -> String {
+    func newAgent(task: String, repo: String?, worktree: Bool, agent: AgentKind, at: CGPoint? = nil, parent: String? = nil, name: String? = nil,
+                  images: [URL] = []) -> String {
         var cwd = repo ?? defaultCwd
         var branch: String?
         if worktree, let top = Git.toplevel(cwd) {
@@ -292,12 +294,12 @@ final class CanvasController: NSObject {
         t.cwd = cwd
         t.sessionID = t.id
         t.task = task.isEmpty ? nil : task
-        t.autoName = task.isEmpty ? agent.title : ClaudeIntegration.name(fromTask: task)
+        t.autoName = task.isEmpty ? (images.isEmpty ? agent.title : "Image task") : ClaudeIntegration.name(fromTask: task)
         t.name = name
         t.worktree = branch == nil ? nil : cwd
         t.branch = branch
-        t.command = agent.command(task: task)
-        if !task.isEmpty { t.state = .working; t.stateSince = Date() }
+        t.command = agent.command(task: task, images: images)
+        if !task.isEmpty || !images.isEmpty { t.state = .working; t.stateSince = Date() }
         if agent == .claude { hookedTiles.insert(t.id) }
         let id = addTile(t, at: at)
         if let parent { addLink(from: parent, to: id, kind: .spawned) }
@@ -995,7 +997,7 @@ final class CanvasController: NSObject {
     }
 
     /// Fan-out: the same task in N worktrees, framed, with a Compare tile.
-    func fanOut(task: String, repo: String?, agent: AgentKind, count: Int) {
+    func fanOut(task: String, repo: String?, agent: AgentKind, count: Int, images: [URL] = []) {
         let size = Self.defaultSize(.agent)
         let v = canvas.visibleWorldRect
         var origin = CanvasView.snap(CGPoint(x: v.minX + 120, y: v.minY + 140))
@@ -1004,7 +1006,7 @@ final class CanvasController: NSObject {
         for i in 0..<count {
             let at = CGPoint(x: origin.x + CGFloat(i) * (size.width + 44), y: origin.y)
             ids.append(newAgent(task: task, repo: repo, worktree: true, agent: agent, at: at,
-                                name: "Attempt \(i + 1) · " + ClaudeIntegration.name(fromTask: task)))
+                                name: "Attempt \(i + 1) · " + ClaudeIntegration.name(fromTask: task), images: images))
         }
         var cmp = Tile(kind: .compare, frame: .zero)
         cmp.target = ids.joined(separator: ",")
@@ -1449,10 +1451,17 @@ enum AgentKind: String, CaseIterable, Identifiable {
         case .shell: return "Shell command"
         }
     }
-    func command(task: String) -> String? {
+    /// The command line that starts this agent. Images (pasted into the
+    /// dispatch bar) go to Codex as `--image`, and to Claude Code as paths
+    /// in the prompt plus `--add-dir` so it can read them without asking.
+    func command(task: String, images: [URL] = []) -> String? {
         switch self {
-        case .claude: return ClaudeIntegration.command(task: task)
-        case .codex: return task.isEmpty ? "codex" : "codex \(shellQuote(task))"
+        case .claude: return ClaudeIntegration.command(task: task, images: images)
+        case .codex:
+            var cmd = "codex"
+            for i in images { cmd += " --image " + shellQuote(i.path) }
+            if !task.isEmpty { cmd += (images.isEmpty ? " " : " -- ") + shellQuote(task) }
+            return cmd
         case .shell: return task.isEmpty ? nil : task
         }
     }

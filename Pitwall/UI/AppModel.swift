@@ -31,6 +31,60 @@ final class ZoomLevel: ObservableObject {
 
 final class DispatchDraft: ObservableObject {
     @Published var text = ""
+    /// Images pasted or dropped into the dispatch bar, sent with the task.
+    @Published var images: [URL] = []
+}
+
+/// Images pasted into Pitwall: attached to a new agent's task, or pasted
+/// into a terminal.
+enum ImageAttachments {
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp"]
+    static var dir: URL { PitwallPaths.support.appendingPathComponent("attachments", isDirectory: true) }
+
+    /// Images on the pasteboard: image files (copied in Finder) are used in
+    /// place; raw image data (screenshots, "Copy Image") is saved as PNG.
+    /// Empty when the pasteboard holds text, so a normal paste goes ahead.
+    static func images(from pb: NSPasteboard) -> [URL] {
+        let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: opts) as? [URL], !urls.isEmpty {
+            return urls.filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+        }
+        if pb.string(forType: .string) != nil { return [] }
+        guard let png = pngData(from: pb) else { return [] }
+        return save(png).map { [$0] } ?? []
+    }
+
+    /// The pasteboard holds an image and nothing a text paste could use.
+    static func isImageOnly(_ pb: NSPasteboard) -> Bool {
+        guard pb.string(forType: .string) == nil else { return false }
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty { return false }
+        return NSImage.canInit(with: pb)
+    }
+
+    static func pngData(from pb: NSPasteboard) -> Data? {
+        if let d = pb.data(forType: .png) { return d }
+        guard let img = NSImage(pasteboard: pb), let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    static func save(_ png: Data) -> URL? {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        let url = dir.appendingPathComponent("pasted-\(f.string(from: Date()))-\(UUID().uuidString.prefix(4).lowercased()).png")
+        do { try png.write(to: url); return url } catch { return nil }
+    }
+
+    /// Pasted images older than a week are no longer needed.
+    static func prune() {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]) else { return }
+        let cutoff = Date().addingTimeInterval(-7 * 86400)
+        for f in files where ((try? f.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()) < cutoff {
+            try? fm.removeItem(at: f)
+        }
+    }
 }
 
 /// UI state shared by the SwiftUI overlays.
@@ -141,14 +195,31 @@ final class AppModel: ObservableObject {
     func dispatch() {
         let task = dispatchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let ctl = controller else { return }
+        let images = draft.images
         if dispatchAgent == .shell {
             _ = ctl.newTerminal(cwd: dispatchRepo ?? board.root, command: task.isEmpty ? nil : task)
-        } else if dispatchCount > 1 && !task.isEmpty {
-            ctl.fanOut(task: task, repo: dispatchRepo ?? board.root, agent: dispatchAgent, count: dispatchCount)
+        } else if dispatchCount > 1 && !(task.isEmpty && images.isEmpty) {
+            ctl.fanOut(task: task, repo: dispatchRepo ?? board.root, agent: dispatchAgent, count: dispatchCount, images: images)
         } else {
-            ctl.newAgent(task: task, repo: dispatchRepo ?? board.root, worktree: dispatchWorktree, agent: dispatchAgent)
+            ctl.newAgent(task: task, repo: dispatchRepo ?? board.root, worktree: dispatchWorktree, agent: dispatchAgent, images: images)
         }
         dispatchText = ""
+        if dispatchAgent != .shell { draft.images = [] }
+    }
+
+    /// ⌘V in the dispatch bar: attaches clipboard images. Returns false when
+    /// there's nothing to attach, so the text field pastes as usual.
+    func pasteImagesIntoDispatch(from pb: NSPasteboard = .general) -> Bool {
+        guard dispatchAgent != .shell else { return false }
+        return attachToDispatch(ImageAttachments.images(from: pb))
+    }
+
+    @discardableResult
+    func attachToDispatch(_ urls: [URL]) -> Bool {
+        let new = urls.filter { !draft.images.contains($0) }
+        guard !urls.isEmpty else { return false }
+        draft.images.append(contentsOf: new)
+        return true
     }
 
     /// Interprets free text typed into the picker.

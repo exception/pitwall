@@ -345,6 +345,10 @@ extension NSPasteboard {
             if let urls = readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
                 return Data(urls.map { shellQuote($0.path) }.joined(separator: " ").utf8)
             }
+            // A bare image (screenshot, "Copy Image") pastes as the path of a saved PNG.
+            if let png = ImageAttachments.pngData(from: self), let url = ImageAttachments.save(png) {
+                return Data(shellQuote(url.path).utf8)
+            }
             return nil
         case "image/png": return data(forType: .png)
         case "text/html": return data(forType: .html)
@@ -354,7 +358,7 @@ extension NSPasteboard {
 
     func pitwallAvailableMimes() -> [String] {
         var out: [String] = []
-        if types?.contains(.string) == true { out.append("text/plain") }
+        if types?.contains(.string) == true || ImageAttachments.isImageOnly(self) { out.append("text/plain") }
         if types?.contains(.png) == true { out.append("image/png") }
         if types?.contains(.html) == true { out.append("text/html") }
         return out

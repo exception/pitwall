@@ -202,6 +202,7 @@ private struct InboxButton: View {
 /// A tile's timeline: prompts, tool calls, approvals, messages.
 struct TimelineView_: View {
     let tileID: String
+    var height: CGFloat = 420
     @ObservedObject var timelines = Timelines.shared
 
     var body: some View {
@@ -236,7 +237,7 @@ struct TimelineView_: View {
             }
         }
         .padding(14)
-        .frame(width: 380, height: 420)
+        .frame(width: 380, height: height)
         .onAppear { timelines.load(tileID) }
     }
 

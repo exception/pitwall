@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Sidebar
 
@@ -299,6 +300,16 @@ struct DispatchBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if !draft.images.isEmpty && model.dispatchAgent != .shell {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(draft.images, id: \.self) { url in
+                            AttachmentThumb(url: url) { draft.images.removeAll { $0 == url } }
+                        }
+                    }
+                    .padding(.top, 6)
+                }
+            }
             TextField(placeholder, text: $draft.text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
@@ -359,6 +370,25 @@ struct DispatchBar: View {
         .pitwallGlass(cornerRadius: 26)
         .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
             .strokeBorder(Color(ns: Theme.amber).opacity(highlight ? 0.9 : 0), lineWidth: 2))
+        .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
+            guard model.dispatchAgent != .shell else { return false }
+            for p in providers {
+                if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                    _ = p.loadObject(ofClass: URL.self) { url, _ in
+                        guard let url, ImageAttachments.imageExtensions.contains(url.pathExtension.lowercased()) else { return }
+                        DispatchQueue.main.async { model.attachToDispatch([url]) }
+                    }
+                } else {
+                    p.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                        guard let data, let rep = NSBitmapImageRep(data: data),
+                              let png = rep.representation(using: .png, properties: [:]),
+                              let url = ImageAttachments.save(png) else { return }
+                        DispatchQueue.main.async { model.attachToDispatch([url]) }
+                    }
+                }
+            }
+            return true
+        }
         .onChange(of: model.dispatchFocused) { f in
             guard f else { return }
             focused = true
@@ -369,7 +399,8 @@ struct DispatchBar: View {
     }
 
     private var placeholder: String {
-        model.dispatchAgent == .shell ? "Command to run…" : "What should a new agent work on?"
+        if model.dispatchAgent == .shell { return "Command to run…" }
+        return draft.images.isEmpty ? "What should a new agent work on? (⌘V to attach an image)" : "What should the agent do with this?"
     }
 
     private var repoOptions: [ChipPicker.Option] {
@@ -388,6 +419,43 @@ struct DispatchBar: View {
     private var repoLabel: String {
         let p = model.dispatchRepo ?? model.board.root ?? NSHomeDirectory()
         return (p as NSString).lastPathComponent
+    }
+}
+
+/// A pasted image waiting to go out with the next agent.
+struct AttachmentThumb: View {
+    let url: URL
+    let onRemove: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let img = NSImage(contentsOf: url) {
+                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: "photo").foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 56, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Color(nsColor: .windowBackgroundColor))
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(Color.primary))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 6, y: -6)
+            .opacity(hover ? 1 : 0.85)
+            .help("Remove image")
+            .accessibilityLabel("Remove image")
+        }
+        .padding(.trailing, 6)
+        .onHover { hover = $0 }
+        .help(url.lastPathComponent)
     }
 }
 

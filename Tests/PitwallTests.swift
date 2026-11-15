@@ -116,4 +116,17 @@ final class PitwallTests: XCTestCase {
         XCTAssertTrue(w.owner(for: wheel, under: tile, now: t0.addingTimeInterval(0.1)) === canvas)
         XCTAssertTrue(w.owner(for: wheel, under: tile, now: t0.addingTimeInterval(0.6)) === tile)
     }
+
+    func testImageAttachmentsGoIntoAgentCommands() {
+        let img = URL(fileURLWithPath: "/tmp/pw-att/shot.png")
+        let prompt = ClaudeIntegration.prompt(task: "fix this", images: [img])
+        XCTAssertTrue(prompt.hasPrefix("fix this\n\nAttached image"))
+        XCTAssertTrue(prompt.contains("- /tmp/pw-att/shot.png"))
+        XCTAssertEqual(ClaudeIntegration.prompt(task: "x", images: []), "x")
+        let claude = AgentKind.claude.command(task: "fix this", images: [img]) ?? ""
+        XCTAssertTrue(claude.contains("--add-dir '/tmp/pw-att'") || claude.contains("--add-dir /tmp/pw-att"), claude)
+        let codex = AgentKind.codex.command(task: "fix this", images: [img]) ?? ""
+        XCTAssertTrue(codex.contains("--image"), codex)
+        XCTAssertTrue(codex.contains(" -- "), codex)
+    }
 }

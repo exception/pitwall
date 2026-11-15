@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
         PitwallPaths.ensure()
+        DispatchQueue.global(qos: .utility).async { ImageAttachments.prune() }
         // SIGTERM/SIGINT (logout, kill, crash reporters): save and quit cleanly.
         for sig in [SIGTERM, SIGINT] {
             signal(sig, SIG_IGN)

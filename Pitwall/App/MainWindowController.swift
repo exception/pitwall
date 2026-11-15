@@ -14,6 +14,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var inboxMonitor: Any?
     private var searchHost: NSView?
     private var scrollMonitor: Any?
+    private var pasteMonitor: Any?
     private var scrollLatch = ScrollLatch<NSView>()
     private var trailingHost: NSView?
     private var dispatchHost: NSView?
@@ -93,6 +94,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         }.store(in: &bag)
         model.search.controller = controller
+        // ⌘V with an image while typing in the dispatch bar attaches it.
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, e.window === self.window,
+                  e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  e.charactersIgnoringModifiers == "v",
+                  let host = self.dispatchHost,
+                  let editor = self.window?.firstResponder as? NSView, editor.isDescendant(of: host) else { return e }
+            return self.model.pasteImagesIntoDispatch() ? nil : e
+        }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
             guard let self, e.window === self.window else { return e }
             return self.routeScroll(e)

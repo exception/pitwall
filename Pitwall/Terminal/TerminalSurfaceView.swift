@@ -30,6 +30,9 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
     }
 
     weak var delegate: TerminalSurfaceDelegate?
+    /// Agent CLIs (Claude Code, Codex) read images off the clipboard on
+    /// Ctrl+V, so ⌘V with only an image on the clipboard sends Ctrl+V.
+    var imagePasteSendsControlV = false
     private(set) var surface: ghostty_surface_t?
     var cellSize: CGSize = .zero
 
@@ -192,6 +195,24 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
         ev.action = GHOSTTY_ACTION_RELEASE
         _ = ghostty_surface_key(surface, ev)
         return true
+    }
+
+    private func pressControlV() {
+        guard let surface else { return }
+        var ev = ghostty_input_key_s()
+        ev.action = GHOSTTY_ACTION_PRESS
+        ev.keycode = 0x09 // kVK_ANSI_V
+        ev.mods = GHOSTTY_MODS_CTRL
+        ev.consumed_mods = GHOSTTY_MODS_NONE
+        ev.unshifted_codepoint = 0x76 // "v"
+        // Same shape as a real Ctrl+V: the letter, with the ctrl modifier.
+        "v".withCString { p in
+            ev.text = p
+            _ = ghostty_surface_key(surface, ev)
+        }
+        ev.action = GHOSTTY_ACTION_RELEASE
+        ev.text = nil
+        _ = ghostty_surface_key(surface, ev)
     }
 
     func readVisibleText() -> String? {
@@ -398,6 +419,12 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, focused, let surface else { return false }
+
+        if imagePasteSendsControlV, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers == "v", ImageAttachments.isImageOnly(.general) {
+            pressControlV()
+            return true
+        }
 
         // Terminal bindings (copy, paste, …) win.
         var ev = TerminalInput.keyEvent(event, GHOSTTY_ACTION_PRESS)
