@@ -100,6 +100,11 @@ struct Tile: Codable, Identifiable, Equatable {
     var rcSpawn: String?
     /// Remote session tiles: Claude Code's session id (target is the transcript).
     var rcSession: String?
+    /// Remote Control hosts the user started by typing `claude rc` in this
+    /// terminal: it goes back to a plain terminal when they stop it.
+    var rcAdopted: Bool?
+    /// The host runs without Pitwall's settings, so its sessions can't report here.
+    var rcExternal: Bool?
 
     var displayName: String {
         if let name, !name.isEmpty { return name }

@@ -198,6 +198,8 @@ extension CanvasController {
     @discardableResult
     func startRemoteControl(cwd: String? = nil, worktree: Bool = false, at: CGPoint? = nil) -> String {
         let dir = cwd ?? board.root ?? defaultCwd
+        // Remote Control refuses worktree mode outside a git repository.
+        let worktree = worktree && Git.toplevel(dir) != nil
         let name = board.name + " · " + (dir as NSString).lastPathComponent
         var t = Tile(kind: .terminal, frame: CGRect(origin: .zero, size: CGSize(width: 440, height: 616)))
         t.cwd = dir
@@ -212,12 +214,13 @@ extension CanvasController {
         let a = NSAlert()
         a.messageText = "Start Remote Control?"
         a.informativeText = "Runs claude remote-control in \(Self.abbreviated(board.root ?? defaultCwd)). Sessions you start from the Claude app or claude.ai open here as tiles."
+        let repo = Git.toplevel(board.root ?? defaultCwd) != nil
         a.addButton(withTitle: "Same Folder")
-        a.addButton(withTitle: "New Worktree Each")
+        if repo { a.addButton(withTitle: "New Worktree Each") }
         a.addButton(withTitle: "Cancel")
         switch a.runModal() {
         case .alertFirstButtonReturn: startRemoteControl(at: at)
-        case .alertSecondButtonReturn: startRemoteControl(worktree: true, at: at)
+        case .alertSecondButtonReturn where repo: startRemoteControl(worktree: true, at: at)
         default: break
         }
     }
@@ -647,15 +650,17 @@ struct MarkdownBlocks: View {
 
 /// What the `claude remote-control` screen says, parsed from its output.
 struct RemoteHostStatus: Equatable {
-    enum Phase: Equatable { case starting, needsTrust, connected, reconnecting, stopped, failed }
+    enum Phase: Equatable { case starting, needsTrust, needsSpawnMode, connected, reconnecting, stopped, failed }
     var phase: Phase = .starting
     var capacity: (used: Int, total: Int)?
     var environmentURL: URL?
     var worktreeSpawn: Bool?
     var message: String?
+    /// Worktree mode needs a git repository.
+    var isGitRepo = false
 
     static func == (a: RemoteHostStatus, b: RemoteHostStatus) -> Bool {
-        a.phase == b.phase && a.capacity?.used == b.capacity?.used && a.capacity?.total == b.capacity?.total
+        a.phase == b.phase && a.isGitRepo == b.isGitRepo && a.capacity?.used == b.capacity?.used && a.capacity?.total == b.capacity?.total
             && a.environmentURL == b.environmentURL && a.worktreeSpawn == b.worktreeSpawn && a.message == b.message
     }
 
@@ -692,6 +697,8 @@ struct RemoteHostStatus: Equatable {
             s.message = lastError.map { lines[$0] }
         } else if tail.contains("[y/N]") {
             s.phase = .needsTrust
+        } else if tail.contains("Choose [1/2]") {
+            s.phase = .needsSpawnMode
         } else if let e = lastError, e > (lastConnected ?? -1) {
             s.phase = .failed
             s.message = lines[e]
@@ -711,16 +718,22 @@ final class RemoteHosts: ObservableObject {
     private var reading = Set<String>()
 
     /// Main thread. Re-reads the host's screen off the main thread.
-    func refresh(_ tileID: String, session: String?) {
+    private var repo: [String: Bool] = [:]
+
+    func refresh(_ tileID: String, session: String?, cwd: String?) {
         guard let session, !reading.contains(tileID) else { return }
         reading.insert(tileID)
+        let knownRepo = cwd.flatMap { repo[$0] }
         DispatchQueue.global(qos: .utility).async {
+            let isRepo = knownRepo ?? (cwd.map { Git.toplevel($0) != nil } ?? false)
             let screen = Sessions.plain(Sessions.scrollback(session, bytes: 6000) ?? "")
             let fg = Sessions.list().first { $0.id == session }
             let shells: Set<String> = ["zsh", "bash", "fish", "sh", "nu", "login", "-zsh", "-bash"]
             let stopped = fg.map { !$0.alive || shells.contains($0.foregroundName ?? "") } ?? true
-            let st = RemoteHostStatus.parse(screen, shellInForeground: stopped)
+            var st = RemoteHostStatus.parse(screen, shellInForeground: stopped)
+            st.isGitRepo = isRepo
             DispatchQueue.main.async {
+                if let cwd { self.repo[cwd] = isRepo }
                 self.reading.remove(tileID)
                 if self.status[tileID] != st { self.status[tileID] = st }
             }
@@ -732,20 +745,40 @@ extension CanvasController {
     func stopRemoteControl(_ id: String) { surface(for: id)?.pressControlC() }
 
     func restartRemoteControl(_ id: String) {
-        guard let t = store.findTile(id)?.tile, let cmd = t.command else { return }
+        guard let t = store.findTile(id)?.tile else { return }
+        // It can only fail the same way again: worktree mode outside a repo.
+        if t.rcSpawn == "worktree", let c = t.cwd, Git.toplevel(c) == nil { setRemoteSpawn(id, worktree: false, live: false) }
+        guard let cmd = store.findTile(id)?.tile.command else { return }
+        store.updateTile(id) { $0.rcExternal = cmd.contains(ClaudeIntegration.settingsFile.path) ? nil : true }
         if let s = surface(for: id) { s.submit(cmd) } else if let sid = t.sessionID { Sessions.submit(sid, text: cmd) }
     }
 
-    /// Flips same-dir ⇄ worktree in the running host (its `w` key) and
-    /// remembers it for restarts.
-    func toggleRemoteSpawn(_ id: String) {
+    /// Same folder ⇄ own worktree. A running host flips with its `w` key;
+    /// either way the choice is kept for the next start.
+    func setRemoteSpawn(_ id: String, worktree: Bool, live: Bool) {
         guard let t = store.findTile(id)?.tile, t.rcSpawn != nil else { return }
-        surface(for: id)?.sendText("w")
-        let wt = t.rcSpawn != "worktree"
+        if live { surface(for: id)?.sendText("w") }
+        let mode = worktree ? "worktree" : "same-dir"
         store.updateTile(id) { x in
-            x.rcSpawn = wt ? "worktree" : "same-dir"
-            x.command = x.command?.replacingOccurrences(of: wt ? "--spawn same-dir" : "--spawn worktree", with: wt ? "--spawn worktree" : "--spawn same-dir")
+            x.rcSpawn = mode
+            guard var c = x.command else { return }
+            if let r = c.range(of: #"--spawn[ =](same-dir|worktree|session)"#, options: .regularExpression) {
+                c.replaceSubrange(r, with: "--spawn " + mode)
+            } else if !live {
+                c += " --spawn " + mode
+            }
+            x.command = c
         }
+    }
+
+    func chooseRemoteSpawn(_ id: String, worktree: Bool) { surface(for: id)?.submit(worktree ? "2" : "1") }
+
+    func isRestartingRemote(_ id: String) -> Bool { rcRestart[id] != nil }
+
+    /// Stops a host started outside Pitwall and starts it again with Pitwall's settings.
+    func restartRemoteUnderPitwall(_ id: String) {
+        stopRemoteControl(id)
+        rcRestart[id] = RemoteRestart(stage: .stopping, at: Date())
     }
 
     func trustRemoteFolder(_ id: String) { surface(for: id)?.submit("y") }
@@ -809,7 +842,8 @@ final class RemoteHostTileContent: NSView, TileContent {
     }
 
     private func refresh() {
-        RemoteHosts.shared.refresh(tileID, session: Store.shared.findTile(tileID)?.tile.sessionID)
+        let t = Store.shared.findTile(tileID)?.tile
+        RemoteHosts.shared.refresh(tileID, session: t?.sessionID, cwd: t?.cwd)
     }
 
     func willClose() { timer?.invalidate(); timer = nil; terminal.willClose() }
@@ -841,10 +875,12 @@ struct RemoteHostView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             statusRow.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
+            if tile?.rcExternal == true { externalBanner }
             Divider().opacity(0.6)
             Group {
                 switch status.phase {
                 case .needsTrust: trustCard
+                case .needsSpawnMode: spawnChoiceCard
                 case .stopped, .failed: stoppedCard
                 default: pairCard
                 }
@@ -877,7 +913,7 @@ struct RemoteHostView: View {
     private var phaseLabel: String {
         switch status.phase {
         case .starting: return "Starting…"
-        case .needsTrust: return "Waiting for you"
+        case .needsTrust, .needsSpawnMode: return "Waiting for you"
         case .connected: return "Live on your phone"
         case .reconnecting: return "Reconnecting…"
         case .stopped: return "Stopped"
@@ -888,7 +924,7 @@ struct RemoteHostView: View {
     private var phaseColor: NSColor {
         switch status.phase {
         case .connected: return Theme.green
-        case .starting, .reconnecting, .needsTrust: return Theme.amber
+        case .starting, .reconnecting, .needsTrust, .needsSpawnMode: return Theme.amber
         case .stopped: return Theme.idle
         case .failed: return Theme.red
         }
@@ -951,6 +987,35 @@ struct RemoteHostView: View {
         .frame(height: 132, alignment: .top)
     }
 
+    private var externalBanner: some View {
+        let restarting = controller?.isRestartingRemote(tileID) ?? false
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: restarting ? "arrow.triangle.2.circlepath" : "info.circle").font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(restarting ? "Restarting with Pitwall's settings so its sessions show up here…"
+                 : "Started outside Pitwall: sessions from your phone won't show up here.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if !restarting && status.phase == .connected {
+                Button("Restart") { controller?.restartRemoteUnderPitwall(tileID) }.controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16).padding(.bottom, 10)
+    }
+
+    private var spawnChoiceCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Where should new sessions run?", systemImage: "folder").font(.system(size: 13, weight: .semibold))
+            Text("Same folder shares this checkout. Own worktree gives each session its own branch and folder (needs a git repository). You can change it later.")
+                .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                if status.isGitRepo { Button("Own Worktree") { controller?.chooseRemoteSpawn(tileID, worktree: true) }.controlSize(.small) }
+                Button("Same Folder") { controller?.chooseRemoteSpawn(tileID, worktree: false) }.controlSize(.small).buttonStyle(.borderedProminent)
+            }
+        }
+        .frame(height: 132, alignment: .top)
+    }
+
     private var stoppedCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(status.phase == .failed ? "Remote Control stopped with an error" : "Remote Control isn't running",
@@ -977,12 +1042,18 @@ struct RemoteHostView: View {
                 Text(TileView.abbreviate(tile?.cwd ?? "")).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
             }
             Spacer(minLength: 0)
-            Picker("", selection: Binding(get: { worktree }, set: { v in if v != worktree { controller?.toggleRemoteSpawn(tileID) } })) {
-                Text("Same folder").tag(false)
-                Text("Own worktree").tag(true)
+            if status.isGitRepo {
+                Picker("", selection: Binding(get: { worktree }, set: { v in
+                    if v != worktree { controller?.setRemoteSpawn(tileID, worktree: v, live: status.phase == .connected) }
+                })) {
+                    Text("Same folder").tag(false)
+                    Text("Own worktree").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            } else {
+                Text("Same folder").font(.system(size: 12)).foregroundStyle(.secondary)
+                    .help("Own worktrees need a git repository")
             }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
-            .disabled(status.phase != .connected)
         }
     }
 
@@ -1088,5 +1159,131 @@ private struct HoverRowStyle: ButtonStyle {
             .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.primary.opacity(configuration.isPressed ? 0.09 : (hover ? 0.05 : 0))))
             .onHover { hover = $0 }
+    }
+}
+
+// MARK: - `claude rc` typed by hand
+
+/// A host being restarted under Pitwall's settings.
+struct RemoteRestart {
+    enum Stage { case waitReady, stopping }
+    var stage: Stage
+    var at: Date
+}
+
+enum ProcessArgs {
+    /// argv of a process this user owns (KERN_PROCARGS2).
+    static func argv(_ pid: Int32) -> [String]? {
+        var mib: [Int32] = [CTL_KERN, KERN_ARGMAX]
+        var argmax: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctl(&mib, 2, &argmax, &size, nil, 0) == 0, argmax > 0 else { return nil }
+        var buf = [UInt8](repeating: 0, count: Int(argmax))
+        var len = Int(argmax)
+        mib = [CTL_KERN, KERN_PROCARGS2, pid]
+        guard sysctl(&mib, 3, &buf, &len, nil, 0) == 0, len > 4 else { return nil }
+        let argc = buf.withUnsafeBytes { $0.load(as: Int32.self) }
+        var i = 4
+        while i < len && buf[i] != 0 { i += 1 } // executable path
+        while i < len && buf[i] == 0 { i += 1 }
+        var out: [String] = []
+        while out.count < Int(argc) && i < len {
+            let start = i
+            while i < len && buf[i] != 0 { i += 1 }
+            out.append(String(decoding: buf[start..<i], as: UTF8.self))
+            i += 1
+        }
+        return out
+    }
+
+    static func startTime(_ pid: Int32) -> Date? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let tv = info.kp_proc.p_un.__p_starttime
+        return Date(timeIntervalSince1970: Double(tv.tv_sec) + Double(tv.tv_usec) / 1_000_000)
+    }
+}
+
+extension CanvasController {
+    /// `claude rc` or `claude remote-control` (not `claude --remote-control`,
+    /// which is one interactive session).
+    static func isRemoteControlCommand(_ argv: [String]) -> Bool {
+        argv.count >= 2 && (argv[1] == "rc" || argv[1] == "remote-control")
+    }
+
+    /// From the poll, for every terminal-backed tile: notices `claude rc`
+    /// typed by hand, restarts it under Pitwall, and turns the tile back into
+    /// a plain terminal when it's stopped.
+    func pollRemoteHost(_ t: Tile, info: SessionInfo, isAgent: Bool) {
+        if t.rcSpawn == nil {
+            guard isAgent, let pid = info.foregroundPid, rcCheckedPID[t.id] != pid else { return }
+            rcCheckedPID[t.id] = pid
+            if let argv = ProcessArgs.argv(pid), Self.isRemoteControlCommand(argv) { adoptRemoteHost(t.id, pid: pid, argv: argv) }
+            return
+        }
+        if var r = rcRestart[t.id] {
+            switch r.stage {
+            case .waitReady:
+                RemoteHosts.shared.refresh(t.id, session: t.sessionID, cwd: t.cwd)
+                if RemoteHosts.shared.status[t.id]?.phase == .connected {
+                    // Trust and spawn-mode questions are answered; nothing has
+                    // been started from a phone yet. Restart with Pitwall's settings.
+                    stopRemoteControl(t.id)
+                    r.stage = .stopping
+                    r.at = Date()
+                } else if Date().timeIntervalSince(r.at) > 180 {
+                    rcRestart[t.id] = nil
+                    return
+                }
+            case .stopping:
+                if !isAgent {
+                    rcRestart[t.id] = nil
+                    restartRemoteControl(t.id)
+                    return
+                }
+                if Date().timeIntervalSince(r.at) > 10 { rcRestart[t.id] = nil; return }
+            }
+            rcRestart[t.id] = r
+            return
+        }
+        // Typed by hand and now stopped: it's their terminal again.
+        if t.rcAdopted == true, !isAgent, info.alive {
+            store.updateTile(t.id) { x in
+                x.rcSpawn = nil; x.rcAdopted = nil; x.rcExternal = nil; x.command = nil
+                if x.name == "Remote Control" { x.name = nil }
+            }
+            rcCheckedPID[t.id] = nil
+            RemoteHosts.shared.status[t.id] = nil
+            RemoteHosts.shared.showTerminal.remove(t.id)
+            rebuildTileView(t.id)
+        }
+    }
+
+    func adoptRemoteHost(_ id: String, pid: Int32, argv: [String]) {
+        let ours = ClaudeIntegration.settingsFile.path
+        var rest = Array(argv.dropFirst(2))
+        let hasOurs = rest.contains { $0.contains(ours) }
+        let hasOther = !hasOurs && rest.contains { $0 == "--settings" || $0.hasPrefix("--settings=") }
+        var spawn: String?
+        for (i, a) in rest.enumerated() {
+            if a.hasPrefix("--spawn=") { spawn = String(a.dropFirst("--spawn=".count)) }
+            else if a == "--spawn", i + 1 < rest.count { spawn = rest[i + 1] }
+        }
+        if !hasOurs && !hasOther { rest += ["--settings", ours] }
+        let cmd = (["claude", "remote-control"] + rest).map(shellQuote).joined(separator: " ")
+        // Just typed: safe to restart before anyone starts a session from a phone.
+        let fresh = ProcessArgs.startTime(pid).map { Date().timeIntervalSince($0) < 90 } ?? false
+        store.updateTile(id) { x in
+            x.kind = .terminal
+            x.rcSpawn = spawn ?? "same-dir"
+            x.rcAdopted = true
+            x.command = cmd
+            x.rcExternal = hasOurs ? nil : true
+            if x.name == nil { x.name = "Remote Control" }
+        }
+        if !hasOurs && !hasOther && fresh { rcRestart[id] = RemoteRestart(stage: .waitReady, at: Date()) }
+        rebuildTileView(id)
     }
 }

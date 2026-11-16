@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import QuartzCore
 
 /// Listens on the app socket for `pitwall` CLI, hook and MCP requests.
@@ -308,7 +308,23 @@ final class ControlServer {
                 guard let png = rep.representation(using: .png, properties: [:]),
                       (try? png.write(to: URL(fileURLWithPath: text))) != nil else { return fail("couldn't write \(text)") }
                 return ok(.string(text))
-            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode|fullscreen|snapshot")
+            case "click":
+                // Tests: a synthetic click at a point in a tile's content (points at
+                // 100%, from its top-left), delivered through this window only.
+                let p = text.split(separator: " ").map(String.init)
+                guard p.count == 3, let tv = ctl.tileViews[p[0]], let x = Double(p[1]), let y = Double(p[2]),
+                      let w = ctl.canvas.window else { return fail("ui click <tile> <x> <y>") }
+                let c = tv.content
+                let zoom = c.bounds.width > 0 ? c.bounds.width / max(tv.tile.frame.width, 1) : 1
+                let local = CGPoint(x: x * zoom, y: c.isFlipped ? y * zoom : c.bounds.height - y * zoom)
+                let loc = c.convert(local, to: nil)
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    guard let e = NSEvent.mouseEvent(with: type, location: loc, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                     windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { continue }
+                    w.sendEvent(e)
+                }
+                return ok(.string("\(loc.x),\(loc.y)"))
+            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode|fullscreen|snapshot|click")
             }
             return ok()
 

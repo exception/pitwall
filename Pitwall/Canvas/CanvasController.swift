@@ -95,6 +95,18 @@ final class CanvasController: NSObject {
         updateAttentionBadge()
     }
 
+    /// Recreates a tile's view (its content kind changed). Terminal sessions
+    /// keep running in the daemon and reattach.
+    func rebuildTileView(_ id: String) {
+        guard let v = tileViews[id] else { return }
+        let wasFocused = focusedTileID == id
+        v.content.willClose()
+        v.removeFromSuperview()
+        tileViews[id] = nil
+        reconcile()
+        if wasFocused { focus(tileID: id, makeFirstResponder: false) }
+    }
+
     func layoutAll(live: Bool) {
         DevStats.layoutPasses += 1
         if live { DevStats.liveLayoutPasses += 1 }
@@ -1370,6 +1382,7 @@ final class CanvasController: NSObject {
                 guard let sid = t.sessionID, let info = byID[sid] else { continue }
                 let fg = info.foregroundName ?? ""
                 let isAgent = Self.isAgentProcess(fg)
+                pollRemoteHost(t, info: info, isAgent: isAgent)
                 if isAgent { agentSeen.insert(t.id) }
                 agentPID[t.id] = isAgent ? info.foregroundPid : nil
                 if t.kind == .agent {
@@ -1383,7 +1396,7 @@ final class CanvasController: NSObject {
                     }
                 }
                 // A Remote Control host runs claude too, but it's a terminal, not an agent.
-                if isAgent && t.kind == .terminal && t.rcSpawn == nil {
+                if isAgent && t.kind == .terminal && store.findTile(t.id)?.tile.rcSpawn == nil {
                     store.updateTile(t.id) { $0.kind = .agent; if $0.autoName == nil { $0.autoName = fg.first?.isNumber == true ? "Claude" : fg.capitalized } }
                 }
                 if let cwd = info.foregroundCwd, cwd != t.cwd { store.updateTile(t.id) { $0.cwd = cwd } }
@@ -1439,6 +1452,10 @@ final class CanvasController: NSObject {
     var runLoading = Set<String>()
     /// Remote Control sessions whose tile was closed.
     var dismissedRemote = Set<String>()
+    /// Foreground pids already checked for `claude rc`, per tile.
+    var rcCheckedPID: [String: Int32] = [:]
+    /// Hosts being restarted under Pitwall's settings.
+    var rcRestart: [String: RemoteRestart] = [:]
     /// Agent → watch tile whose failure it was sent; rerun the watch when it finishes.
     var fixRequests: [String: String] = [:]
     var pendingPlacement: (point: CGPoint?, frameID: String?, expires: Date)?

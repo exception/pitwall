@@ -258,6 +258,16 @@ final class PitwallTests: XCTestCase {
         XCTAssertEqual(RemoteHostStatus.parse(failed, shellInForeground: false).phase, .failed)
     }
 
+    func testRemoteControlDetection() {
+        XCTAssertTrue(CanvasController.isRemoteControlCommand(["claude", "rc"]))
+        XCTAssertTrue(CanvasController.isRemoteControlCommand(["claude", "remote-control", "--spawn", "worktree"]))
+        XCTAssertFalse(CanvasController.isRemoteControlCommand(["claude", "--remote-control"]))
+        XCTAssertFalse(CanvasController.isRemoteControlCommand(["claude"]))
+        XCTAssertEqual(ProcessArgs.argv(getpid())?.isEmpty, false)
+        let choose = "Remote Control starts\n  [1] same-dir\n  [2] worktree\nChoose [1/2] (default: 1): "
+        XCTAssertEqual(RemoteHostStatus.parse(choose, shellInForeground: false).phase, .needsSpawnMode)
+    }
+
     func testMarkdownBlocks() {
         let b = MarkdownBlocks.blocks("Done.\n\n- **Bug:** fixed\n  - nested\n1. first\n## Notes\n```\nnpm test\n```\ntail")
         XCTAssertEqual(b, [.para("Done."), .bullet("**Bug:** fixed", 0), .bullet("nested", 1), .numbered("1.", "first"),

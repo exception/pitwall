@@ -86,6 +86,13 @@ enum AttachCommand {
             }
         }
         winch.resume()
+        // A resize between reading the size above and installing the handler
+        // was ignored (SIGWINCH defaults to ignore): send the current size so
+        // the session doesn't keep a stale, smaller grid.
+        var nowCols: UInt16 = 0, nowRows: UInt16 = 0
+        if pw_get_winsize(STDIN_FILENO, &nowCols, &nowRows) == 0, nowCols > 0, nowRows > 0, nowCols != cols || nowRows != rows {
+            sendFrame(.resize, Data([UInt8(nowCols >> 8), UInt8(nowCols & 0xff), UInt8(nowRows >> 8), UInt8(nowRows & 0xff)]))
+        }
 
         Thread.detachNewThread {
             var buf = [UInt8](repeating: 0, count: 16384)
