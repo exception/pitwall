@@ -12,6 +12,11 @@ cd "${0:A:h}/.."
 APP=build/dd/Build/Products/Debug/Pitwall.app
 H=$APP/Contents/Helpers/pitwall
 export PITWALL_HOME=$PWD/build/ui-test/home
+# Unix socket paths max out at 103 bytes: long checkout paths (worktrees) get
+# a short home in the temp dir instead, one per checkout.
+if (( ${#PITWALL_HOME} + 13 > 103 )); then   # 13 = /run/app.sock
+  PITWALL_HOME=${TMPDIR%/}/pw-ui-$(print -n $PWD | shasum | cut -c1-8)
+fi
 # Run from inside Pitwall, the shell carries the live app's socket and tile:
 # drop them, or the helper would drive the real app instead of this one.
 unset PITWALL_SOCKET PITWALL_TILE_ID PITWALL_BOARD_ID PITWALL_SESSION_ID PITWALL_CLI
@@ -258,7 +263,57 @@ assert f[0]<=t[0] and f[1]<=t[1] and f[0]+f[2]>=t[0]+t[2] and f[1]+f[3]>=t[1]+t[
   stop_app
 }
 
-if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status background fullscreen approvals handoff watch boardtools frames); fi
+scenario_bgoutput() {
+  echo "bgoutput: clicking \"running …\" follows the command's output; Stop ends it"
+  reset; start_app
+  # A stand-in agent that leaves ping running in its own session, its output
+  # going to a file (as Claude Code does with a background Bash call).
+  mkdir -p $OUT/bin-ping
+  cc -x c -o $OUT/bin-ping/claude - <<'C'
+#include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+int main(int c, char **v) {
+  signal(SIGCHLD, SIG_IGN);   /* reap, like the shell around a real command */
+  if (fork() == 0) {
+    setsid(); int fd = open(v[1], O_WRONLY | O_CREAT | O_TRUNC, 0644); dup2(fd, 1); dup2(fd, 2);
+    execl("/sbin/ping", "ping", "-i", "1", "-c", "99999", "127.0.0.1", (char *)0);
+  }
+  for (;;) pause();
+}
+C
+  local LOG=$PWD/$OUT/bgoutput-ping.log
+  A=$($H tile new --title "Agent" -- $PWD/$OUT/bin-ping/claude $LOG); sleep 5.5   # one poll: seen as an agent
+  echo '{"prompt":"Start the server"}' | PITWALL_TILE_ID=$A $H hook UserPromptSubmit
+  echo '{"last_assistant_message":"Started it in the background."}' | PITWALL_TILE_ID=$A $H hook Stop; sleep 0.5
+  check "background lists ping ($(tile_field $A background))" '[[ $(tile_field $A background) == ping ]]'
+  local PING=$(pgrep -f "ping -i 1 -c 99999 127.0.0.1" | head -1)
+  check "ping is running" '[[ -n $PING ]]'
+  local W=$(tile_field $A frame | cut -d, -f3)
+  $H ui click "$A $((W - 40)) -22" >/dev/null; sleep 2.5    # the green label, right end of the header
+  out_tile() { $H tile list | python3 -c "import json,sys; ids=[t['id'] for t in json.load(sys.stdin) if t['name']=='ping output']; print(len(ids), ids[0] if ids else '')"; }
+  local O=$(out_tile | cut -d' ' -f2)
+  check "an output tile opened" '[[ -n $O ]]'
+  check "it shows ping's output" '$H tile read $O --bytes 4000 | grep -q "bytes from"'
+  check "it says what it follows ($(tile_field $O message))" '[[ $(tile_field $O message) == "Following bgoutput-ping.log" ]]'
+  $H ui snapshot $PWD/$OUT/bgoutput.png >/dev/null
+  $H tile focus $A; sleep 1
+  W=$(tile_field $A frame | cut -d, -f3)
+  $H ui click "$A $((W - 40)) -22" >/dev/null; sleep 1.5
+  check "clicking again reuses it ($(out_tile | cut -d' ' -f1) tile)" '[[ $(out_tile | cut -d" " -f1) == 1 ]]'
+  local hit=$($H ui press "$O Stop ping" 2>&1)
+  check "the Stop pill was pressed ${hit:+($hit)}" '[[ -z $hit ]]'
+  sleep 5.5   # the process dies, the tail ends, then a poll
+  check "ping stopped" '! kill -0 $PING 2>/dev/null'
+  check "output tile ended ($(tile_field $O state) · $(tile_field $O message))" '[[ $(tile_field $O state) == done ]]'
+  check "it says ping exited" '$H tile read $O --bytes 4000 | grep -q "ping exited"'
+  check "agent no longer lists it ($(tile_field $A background))" '[[ -z $(tile_field $A background) ]]'
+  $H ui snapshot $PWD/$OUT/bgoutput-stopped.png >/dev/null
+  kill $PING 2>/dev/null
+  stop_app
+}
+
+if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status background fullscreen approvals handoff watch boardtools frames bgoutput); fi
 for s in $scenarios; do scenario_$s; done
 reset
 echo; [[ $FAILED == 0 ]] && echo "All UI scenarios passed. Screenshots: $OUT/" || { echo "Some UI scenarios FAILED. See $OUT/"; exit 1; }

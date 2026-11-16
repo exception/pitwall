@@ -310,7 +310,8 @@ final class ControlServer {
                 return ok(.string(text))
             case "click":
                 // Tests: a synthetic click at a point in a tile's content (points at
-                // 100%, from its top-left), delivered through this window only.
+                // 100%, from its top-left; negative y is the header), delivered
+                // through this window only.
                 let p = text.split(separator: " ").map(String.init)
                 guard p.count == 3, let tv = ctl.tileViews[p[0]], let x = Double(p[1]), let y = Double(p[2]),
                       let w = ctl.canvas.window else { return fail("ui click <tile> <x> <y>") }
@@ -318,13 +319,31 @@ final class ControlServer {
                 let zoom = c.bounds.width > 0 ? c.bounds.width / max(tv.tile.frame.width, 1) : 1
                 let local = CGPoint(x: x * zoom, y: c.isFlipped ? y * zoom : c.bounds.height - y * zoom)
                 let loc = c.convert(local, to: nil)
+                // Header buttons (negative y): press them directly. A synthetic
+                // mouse-down would sit in the button's tracking loop waiting for
+                // a real mouse-up.
+                if let v = w.contentView?.hitTest(loc) as? NSButton {   // hitTest takes superview (window) coordinates
+                    v.performClick(nil)
+                    return ok(.string("button \(v.accessibilityLabel() ?? v.toolTip ?? "")"))
+                }
                 for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                     guard let e = NSEvent.mouseEvent(with: type, location: loc, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                      windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { continue }
                     w.sendEvent(e)
                 }
                 return ok(.string("\(loc.x),\(loc.y)"))
-            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode|fullscreen|snapshot|click")
+            case "press":
+                // Tests: press a visible button in a tile by its accessibility label.
+                let p = text.split(separator: " ", maxSplits: 1).map(String.init)
+                guard p.count == 2, let tv = ctl.tileViews[p[0]] else { return fail("ui press <tile> <label>") }
+                func find(_ v: NSView) -> NSButton? {
+                    if let b = v as? NSButton, !b.isHiddenOrHasHiddenAncestor, b.accessibilityLabel() == p[1] { return b }
+                    for s in v.subviews { if let b = find(s) { return b } }
+                    return nil
+                }
+                guard let b = find(tv) else { return fail("no button \"\(p[1])\" in \(p[0])") }
+                b.performClick(nil)
+            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode|fullscreen|snapshot|click|press")
             }
             return ok()
 

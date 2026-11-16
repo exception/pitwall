@@ -71,10 +71,11 @@ extension CanvasController {
     /// until the command exits.
     func followOutput(_ c: Processes.Command, of tileID: String, cwd: String?) {
         guard let path = c.output else { return }
-        // Stop following once the process is gone (tail -F never ends by itself).
+        // Stop following once the process is gone (tail -F never ends by
+        // itself). A zombie counts as gone: its parent may never reap it.
         let script = """
         tail -n 500 -F \(shellQuote(path)) 2>/dev/null & t=$!
-        while kill -0 \(c.pid) 2>/dev/null; do sleep 1; done
+        while ps -o stat= -p \(c.pid) 2>/dev/null | grep -qv '^Z'; do sleep 1; done
         sleep 1; kill $t 2>/dev/null; wait $t 2>/dev/null
         printf '\\n— %s exited —\\n' \(shellQuote(c.label))
         """
