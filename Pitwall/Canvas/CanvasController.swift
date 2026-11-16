@@ -43,6 +43,10 @@ final class CanvasController: NSObject {
             fullScreenTileID = nil
             restoreFullScreen = fullScreenByBoard.removeValue(forKey: b.id).flatMap { b.tile($0) != nil ? $0 : nil }
             if wasFull && restoreFullScreen == nil { model?.fullScreen = false }
+            fullScreenTransition = nil
+            fullScreenStep = nil
+            fullScreenLink?.invalidate()
+            fullScreenLink = nil
             // Switching boards: tear down views (sessions keep running in the daemon).
             for (_, v) in tileViews { v.content.willClose(); v.removeFromSuperview() }
             tileViews.removeAll()
@@ -118,9 +122,24 @@ final class CanvasController: NSObject {
         if !live { CATransaction.begin() }
         CATransaction.setDisableActions(true)
         let full = fullScreenTileID
+        let transition = fullScreenTransition
         for t in board.tiles {
             guard let v = tileViews[t.id] else { continue }
-            if let full {
+            if let tr = transition {
+                // Mid full-screen transition: the tile rides its interpolated
+                // frame; the rest of the board fades out (or back in) beneath it.
+                if t.id == tr.id {
+                    v.frame = tr.rect
+                    v.isHidden = false
+                    v.apply(zoom: tr.zoom, live: true)
+                    continue
+                }
+                v.alphaValue = tr.others
+                if tr.others <= 0 { v.isHidden = true; continue }
+            } else if v.alphaValue != 1 {
+                v.alphaValue = 1
+            }
+            if let full, transition == nil {
                 // One tile fills the window at 100%; everything else steps aside.
                 if t.id == full {
                     v.frame = fullScreenRect
@@ -541,21 +560,100 @@ final class CanvasController: NSObject {
     func toggleFullScreen(_ id: String? = nil) {
         if let cur = fullScreenTileID, id == nil || id == cur { exitFullScreen(); return }
         guard let id = id ?? focusedTileID, board.tile(id) != nil else { return }
-        if fullScreenTileID != nil { exitFullScreen() }
+        if fullScreenTileID != nil { exitFullScreen(animated: false) }
         fullScreenTileID = id
         tileViews[id]?.isFullScreen = true
         model?.fullScreen = true
         focus(tileID: id, makeFirstResponder: true)
-        animateLayout()
+        animateFullScreen(id, entering: true)
     }
 
-    func exitFullScreen() {
+    func exitFullScreen(animated: Bool = true) {
         guard let id = fullScreenTileID else { return }
         fullScreenTileID = nil
         tileViews[id]?.isFullScreen = false
         model?.fullScreen = false
-        animateLayout()
+        if animated { animateFullScreen(id, entering: false) } else { finishFullScreenTransition() }
         focus(tileID: id, makeFirstResponder: true)
+    }
+
+    /// The tile's frame and zoom for this display frame, and how opaque the
+    /// rest of the board is. Set only while a full-screen transition runs.
+    private var fullScreenTransition: (id: String, rect: CGRect, zoom: CGFloat, others: CGFloat)?
+    private var fullScreenLink: CADisplayLink?
+    private var fullScreenStep: (() -> Bool)?
+
+    /// Grows the tile from where it sits on the canvas to fill the window, or
+    /// shrinks it back, instead of jumping. Starts from wherever the tile is
+    /// right now, so toggling mid-flight reverses smoothly.
+    private func animateFullScreen(_ id: String, entering: Bool) {
+        guard Prefs.shared.motion, let v = tileViews[id], let t = board.tile(id), !v.isHidden || entering else {
+            finishFullScreenTransition()
+            return
+        }
+        let wasRunning = fullScreenTransition
+        let fromRect = wasRunning?.id == id ? wasRunning!.rect : v.frame
+        let fromZoom = wasRunning?.id == id ? wasRunning!.zoom : (v.zoom > 0 ? v.zoom : canvas.viewport.zoom)
+        let fromOthers = wasRunning?.others ?? (entering ? 1 : 0)
+        if let old = wasRunning, old.id != id { tileViews[old.id]?.content.freezeGrid(nil) }
+        // Re-read the destination every frame: the camera may be flying
+        // (flyTo exits full screen and moves at once) or the sidebar toggling.
+        let tileFrame = t.frame
+        let target: () -> (CGRect, CGFloat) = { [unowned self] in
+            entering ? (self.fullScreenRect, 1) : (self.canvas.toView(tileFrame), self.canvas.viewport.zoom)
+        }
+        let toOthers: CGFloat = entering ? 0 : 1
+        // Both ways, the grid sits at its full-screen size the whole time: it
+        // reflows once as the tile starts growing (or once it has landed back
+        // on the canvas), and the text only ever scales evenly with zoom.
+        let full = fullScreenRect
+        v.content.freezeGrid(CGSize(width: (full.width * 2).rounded() / 2,
+                                    height: ((full.height - Theme.headerHeight) * 2).rounded() / 2))
+        v.layer?.zPosition = 10
+        let duration: CFTimeInterval = 0.26
+        let t0 = CACurrentMediaTime()
+        fullScreenTransition = (id, fromRect, fromZoom, fromOthers)
+        fullScreenStep = { [weak self] in
+            guard let self, self.fullScreenTransition?.id == id else { return true }
+            let p = min(1, (CACurrentMediaTime() - t0) / duration)
+            let e = 1 - pow(1 - p, 3)   // ease out: quick start, soft landing
+            func lerp(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * e }
+            let (toRect, toZoom) = target()
+            let rect = CGRect(x: lerp(fromRect.minX, toRect.minX), y: lerp(fromRect.minY, toRect.minY),
+                              width: lerp(fromRect.width, toRect.width), height: lerp(fromRect.height, toRect.height))
+            let zoom = fromZoom * pow(toZoom / max(fromZoom, 0.01), e)
+            // The board fades faster than the tile moves so it never looks muddy.
+            let others = fromOthers + (toOthers - fromOthers) * min(1, e * 1.4)
+            self.fullScreenTransition = (id, rect, zoom, others)
+            if p >= 1 { self.finishFullScreenTransition(); return true }
+            self.layoutAll(live: true)
+            return false
+        }
+        if fullScreenLink == nil {
+            let link = canvas.displayLink(target: self, selector: #selector(fullScreenTick(_:)))
+            link.add(to: .main, forMode: .common)
+            fullScreenLink = link
+        }
+        layoutAll(live: true)
+    }
+
+    @objc private func fullScreenTick(_ link: CADisplayLink) {
+        if fullScreenStep?() ?? true {
+            link.invalidate()
+            if fullScreenLink === link { fullScreenLink = nil; fullScreenStep = nil }
+        }
+    }
+
+    private func finishFullScreenTransition() {
+        if let tr = fullScreenTransition, let v = tileViews[tr.id] {
+            v.layer?.zPosition = 0
+            v.content.freezeGrid(nil)
+        }
+        fullScreenTransition = nil
+        fullScreenStep = nil
+        fullScreenLink?.invalidate()
+        fullScreenLink = nil
+        layoutAll(live: false)
     }
 
     /// The rect a full-screen tile fills: the canvas area beside the sidebar.
@@ -1593,6 +1691,67 @@ enum AgentKind: String, CaseIterable, Identifiable {
             return cmd
         case .shell: return task.isEmpty ? nil : task
         }
+    }
+}
+
+/// Which optional agent CLIs the user's shell can actually run, so pickers
+/// don't offer one that would just fail with "command not found". Agents
+/// start in a login shell, so that's where we look (Codex usually lives under
+/// an npm or Homebrew prefix the app's own PATH doesn't have). Until the first
+/// check answers, everything counts as installed.
+final class AgentAvailability: ObservableObject {
+    static let shared = AgentAvailability()
+    @Published private(set) var missing: Set<AgentKind> = []
+    private var lastCheck: Date?
+    private var checking = false
+
+    private init() {
+        refresh()
+        // Pick up a CLI installed while Pitwall is running.
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    func isInstalled(_ kind: AgentKind) -> Bool { !missing.contains(kind) }
+
+    func refresh() {
+        if checking { return }
+        if let last = lastCheck, Date().timeIntervalSince(last) < 60 { return }
+        checking = true
+        lastCheck = Date()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let found = Self.lookup("codex")
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.checking = false
+                guard let found else { return }   // couldn't tell: keep what we had
+                var m = self.missing
+                if found { m.remove(.codex) } else { m.insert(.codex) }
+                if m != self.missing { self.missing = m }
+            }
+        }
+    }
+
+    /// true/false if the login shell answered, nil if it didn't in time.
+    private static func lookup(_ name: String) -> Bool? {
+        let env = ProcessInfo.processInfo.environment
+        let shell = env["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: shell)
+        // Interactive too: nvm and friends often only set PATH in the rc file.
+        p.arguments = ["-l", "-i", "-c", "printf '\\n__PW__%s\\n' \"$(command -v \(name))\""]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let deadline = Date().addingTimeInterval(8)
+        while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if p.isRunning { p.terminate(); return nil }
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        guard let line = text.split(separator: "\n").last(where: { $0.hasPrefix("__PW__") }) else { return nil }
+        return !line.dropFirst("__PW__".count).trimmingCharacters(in: .whitespaces).isEmpty
     }
 }
 

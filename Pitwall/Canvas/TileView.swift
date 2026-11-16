@@ -9,12 +9,17 @@ protocol TileContent: NSView {
     var focusTarget: NSView? { get }
     func setVisible(_ visible: Bool)
     func willClose()
+    /// Hold the grid at this world size while the tile's frame animates, so
+    /// it doesn't reflow every frame; the card clips whatever overflows.
+    /// `nil` goes back to fitting the tile (one reflow).
+    func freezeGrid(_ worldSize: CGSize?)
 }
 
 extension TileContent {
     func update(tile: Tile) {}
     func setVisible(_ visible: Bool) {}
     func willClose() {}
+    func freezeGrid(_ worldSize: CGSize?) {}
 }
 
 final class FlippedView: NSView {
@@ -53,7 +58,7 @@ final class TileView: NSView {
     private let connector = CALayer()
     private let statusCard = StatusCardView()
     private var hovering = false { didSet { updateHoverChrome() } }
-    private var zoom: CGFloat = 0 // forces fonts on first apply
+    private(set) var zoom: CGFloat = 0 // forces fonts on first apply
     var isFocusedTile = false { didSet { if oldValue != isFocusedTile { updateRing() } } }
 
     /// Agents become status cards below 50%: their status matters more than

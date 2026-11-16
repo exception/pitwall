@@ -42,13 +42,23 @@ final class TerminalTileContent: NSView, TileContent {
         return CGSize(width: r(bounds.width), height: r(bounds.height))
     }
 
+    /// While set, the surface keeps this size (scaled by zoom like always,
+    /// so text never stretches) and the tile's card clips any overflow.
+    private var frozenSize: CGSize?
+
+    func freezeGrid(_ worldSize: CGSize?) {
+        frozenSize = worldSize.flatMap { $0.width > 0 && $0.height > 0 ? $0 : nil }
+        needsLayout = true
+    }
+
     override func layout() {
         super.layout()
         host.frame = bounds
         let w = worldSize
         guard w.width > 0, w.height > 0 else { return }
         host.setBoundsSize(w)
-        if surface.frame.size != w { surface.frame = CGRect(origin: .zero, size: w) }
+        let grid = frozenSize ?? w
+        if surface.frame.size != grid { surface.frame = CGRect(origin: .zero, size: grid) }
     }
 
     func setVisible(_ visible: Bool) {

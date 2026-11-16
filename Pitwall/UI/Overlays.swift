@@ -295,6 +295,7 @@ struct TrailingControls: View {
 struct DispatchBar: View {
     @ObservedObject var model: AppModel
     @ObservedObject var draft: DispatchDraft
+    @ObservedObject private var agents = AgentAvailability.shared
     @FocusState private var focused: Bool
     @State private var highlight = false
 
@@ -342,14 +343,7 @@ struct DispatchBar: View {
                                selected: String(model.dispatchCount)) { model.dispatchCount = Int($0) ?? 1 }
                 }
                 ChipPicker(symbol: model.dispatchAgent == .shell ? "terminal" : "sparkle", title: model.dispatchAgent.title,
-                           options: [
-                            .init(value: AgentKind.claude.rawValue, symbol: "sparkle", title: "Claude Code",
-                                  subtitle: "Live status, sub-agents and canvas tools"),
-                            .init(value: AgentKind.codex.rawValue, symbol: "chevron.left.forwardslash.chevron.right", title: "Codex",
-                                  subtitle: "OpenAI Codex CLI"),
-                            .init(value: AgentKind.shell.rawValue, symbol: "terminal", title: "Shell command",
-                                  subtitle: "Run any command in a new terminal"),
-                           ],
+                           options: agentOptions,
                            selected: model.dispatchAgent.rawValue) { model.dispatchAgent = AgentKind(rawValue: $0) ?? .claude }
                 Spacer()
                 Button(action: model.dispatch) {
@@ -389,6 +383,10 @@ struct DispatchBar: View {
             }
             return true
         }
+        .onReceive(agents.$missing) { missing in
+            // Codex was the default (or picked) but isn't installed: start Claude instead.
+            if missing.contains(model.dispatchAgent) { model.dispatchAgent = .claude }
+        }
         .onChange(of: model.dispatchFocused) { f in
             guard f else { return }
             focused = true
@@ -396,6 +394,21 @@ struct DispatchBar: View {
             withAnimation(.easeOut(duration: 0.15)) { highlight = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation(.easeOut(duration: 0.4)) { highlight = false } }
         }
+    }
+
+    /// Only agents this Mac can run: no Codex row if `codex` isn't installed.
+    private var agentOptions: [ChipPicker.Option] {
+        var out: [ChipPicker.Option] = [
+            .init(value: AgentKind.claude.rawValue, symbol: "sparkle", title: "Claude Code",
+                  subtitle: "Live status, sub-agents and canvas tools"),
+        ]
+        if agents.isInstalled(.codex) {
+            out.append(.init(value: AgentKind.codex.rawValue, symbol: "chevron.left.forwardslash.chevron.right", title: "Codex",
+                             subtitle: "OpenAI Codex CLI"))
+        }
+        out.append(.init(value: AgentKind.shell.rawValue, symbol: "terminal", title: "Shell command",
+                         subtitle: "Run any command in a new terminal"))
+        return out
     }
 
     private var placeholder: String {

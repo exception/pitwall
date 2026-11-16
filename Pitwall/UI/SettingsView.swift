@@ -65,6 +65,7 @@ struct SettingsView: View {
     }
 
     @ObservedObject var prefs: Prefs
+    @ObservedObject private var availability = AgentAvailability.shared
     @State private var section: Section = Section(rawValue: ProcessInfo.processInfo.environment["PITWALL_OPEN_SETTINGS"] ?? "") ?? .appearance
 
     var body: some View {
@@ -200,7 +201,7 @@ struct SettingsView: View {
             Card {
                 Text("Default agent").font(.system(size: 13, weight: .semibold))
                 HStack(spacing: 12) {
-                    ForEach(AgentKind.allCases) { a in
+                    ForEach(AgentKind.allCases.filter { availability.isInstalled($0) || prefs.defaultAgent == $0.rawValue }) { a in
                         AgentChoice(kind: a, selected: prefs.defaultAgent == a.rawValue) { prefs.defaultAgent = a.rawValue }
                     }
                 }

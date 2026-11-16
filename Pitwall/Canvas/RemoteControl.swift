@@ -867,6 +867,7 @@ final class RemoteHostTileContent: NSView, TileContent {
     var focusTarget: NSView? { terminal.isHidden ? nil : terminal.focusTarget }
     func apply(zoom: CGFloat, live: Bool) { self.zoom = zoom; terminal.apply(zoom: zoom, live: live); needsLayout = true }
     func update(tile: Tile) { terminal.update(tile: tile) }
+    func freezeGrid(_ worldSize: CGSize?) { terminal.freezeGrid(worldSize) }
 
     func setVisible(_ visible: Bool) {
         terminal.setVisible(visible)
