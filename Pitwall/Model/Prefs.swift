@@ -43,17 +43,6 @@ final class Prefs: ObservableObject {
     @Published var detectPrompts: Bool { didSet { d.set(detectPrompts, forKey: "detectPrompts") } }
     @Published var imageGallery: Bool { didSet { d.set(imageGallery, forKey: "imageGallery") } }
 
-    // MARK: Remote
-    /// Pitwall Remote is a work in progress: off unless PITWALL_REMOTE=1.
-    static let remoteAvailable = ProcessInfo.processInfo.environment["PITWALL_REMOTE"] == "1"
-
-    @Published var remoteEnabled: Bool {
-        didSet {
-            d.set(remoteEnabled, forKey: "remoteEnabled")
-            if remoteEnabled && Prefs.remoteAvailable { RemoteServer.shared.start() } else { RemoteServer.shared.stop() }
-        }
-    }
-
     // MARK: Terminal
     @Published var fontFamily: String { didSet { d.set(fontFamily, forKey: "fontFamily"); NotificationCenter.default.post(name: .pitwallTerminalConfig, object: nil) } }
     /// Report the terminal as xterm-256color instead of xterm-ghostty, for
@@ -84,7 +73,6 @@ final class Prefs: ObservableObject {
         fontFamily = d.string(forKey: "fontFamily") ?? ""
         fontSize = d.object(forKey: "fontSize") as? Double ?? 13
         compatTerm = b("compatTerm", false)
-        remoteEnabled = b("remoteEnabled", false)
     }
 
     /// Animations are on only if enabled here and macOS Reduce Motion is off.

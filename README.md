@@ -91,10 +91,6 @@ pitwall help                                            # everything else
 
 Agents started by Pitwall get an MCP server with tools for the canvas: `list_tiles`, `open_terminal`, `open`, `read_tile`, `set_status`, `list_links`, `send_message` / `read_messages` (to linked agents), `watch_command`, `follow_pr`, `search_terminals` and `close_tile`.
 
-## Pitwall Remote (work in progress)
-
-An iPhone companion app is in development: see your agents and approve their requests from your phone, end-to-end encrypted (X25519 + ChaCha20-Poly1305, paired by QR code; protocol in [`docs/remote-protocol.md`](docs/remote-protocol.md)). It's disabled in current builds.
-
 ## Build from source
 
 ```sh
@@ -117,9 +113,7 @@ UI scenarios drive a separate Pitwall instance (`PITWALL_HOME=build/ui-test/home
 |---|---|
 | `Pitwall/` | macOS app (AppKit + SwiftUI): canvas, tiles, Inbox, services |
 | `CLI/` | `pitwall` helper: session service (pty + libghostty-vt mirror), attach client, hooks, MCP server, CLI |
-| `Shared/` | Code shared by the app, helper and iOS app |
-| `iOS/` | Pitwall Remote (work in progress) |
-| `remote-web/` | JS implementation of the Remote protocol (interop tests) |
+| `Shared/` | Code shared by the app and helper |
 | `scripts/` | Bootstrap, install, UI tests, demo |
 
 ## License

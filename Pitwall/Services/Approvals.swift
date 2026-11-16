@@ -3,7 +3,7 @@ import Combine
 
 /// Permission requests from Claude Code (`PermissionRequest` hook) waiting for
 /// the user. The hook process blocks on a background thread while the user
-/// answers in the Inbox, a toast, or Pitwall Remote.
+/// answers in the Inbox or a toast.
 final class ApprovalCenter: ObservableObject {
     static let shared = ApprovalCenter()
 

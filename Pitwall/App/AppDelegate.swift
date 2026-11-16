@@ -59,8 +59,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         main = MainWindowController()
         control.controller = main.controller
         control.start()
-        RemoteServer.shared.controller = main.controller
-        if Prefs.remoteAvailable { RemoteServer.shared.start() }
         NSApp.mainMenu = buildMenu()
         _ = Updater.shared  // starts scheduled update checks (release builds)
         main.showWindow(nil)

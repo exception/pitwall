@@ -20,7 +20,7 @@ final class SessionDaemon {
         var exitCode: Int32?
         var lastOutputAt: Date?
         var client: Client?
-        /// Read-only watchers (e.g. Pitwall Remote): output only, no input.
+        /// Read-only watchers (e.g. viewers): output only, no input.
         var observers: [Client] = []
         var readSource: DispatchSourceRead?
         var procSource: DispatchSourceProcess?

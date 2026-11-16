@@ -33,7 +33,7 @@ extension Notification.Name {
 
 struct SettingsView: View {
     enum Section: String, CaseIterable, Identifiable {
-        case appearance, canvas, agents, notifications, terminal, remote
+        case appearance, canvas, agents, notifications, terminal
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -42,7 +42,6 @@ struct SettingsView: View {
             case .agents: return "Agents"
             case .notifications: return "Notifications"
             case .terminal: return "Terminal"
-            case .remote: return "Pitwall Remote"
             }
         }
         var symbol: String {
@@ -52,7 +51,6 @@ struct SettingsView: View {
             case .agents: return "sparkle"
             case .notifications: return "bell.badge.fill"
             case .terminal: return "terminal.fill"
-            case .remote: return "iphone"
             }
         }
         var tint: Color {
@@ -62,7 +60,6 @@ struct SettingsView: View {
             case .agents: return Color(ns: Theme.amber)
             case .notifications: return Color(red: 0.89, green: 0.27, blue: 0.33)
             case .terminal: return Color(white: 0.25)
-            case .remote: return Color(red: 0.09, green: 0.58, blue: 0.43)
             }
         }
     }
@@ -134,7 +131,6 @@ struct SettingsView: View {
         case .agents: agents
         case .notifications: notifications
         case .terminal: terminal
-        case .remote: remote
         }
     }
 
@@ -283,10 +279,6 @@ struct SettingsView: View {
             }
         }
     }
-
-    // MARK: Remote
-
-    private var remote: some View { RemoteSettings(prefs: prefs) }
 }
 
 // MARK: - Building blocks
@@ -479,121 +471,5 @@ private struct TerminalPreview: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color(ns: Theme.terminalBG)))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.08)))
-    }
-}
-
-// MARK: - Pitwall Remote
-
-import CoreImage.CIFilterBuiltins
-
-private struct RemoteSettings: View {
-    @ObservedObject var prefs: Prefs
-    @ObservedObject var devices = RemoteDevices.shared
-    @ObservedObject var server = RemoteServer.shared
-    @State private var pairURL: URL?
-    @State private var now = Date()
-    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        if Prefs.remoteAvailable { content } else { wip }
-    }
-
-    private var wip: some View {
-        Card {
-            Row("Pitwall Remote", "Coming soon: see your agents and approve their requests from your iPhone, end-to-end encrypted.",
-                symbol: "iphone.radiowaves.left.and.right") {
-                Text("Work in progress").font(.system(size: 11, weight: .semibold))
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
-            }
-        }
-    }
-
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Card {
-                Row("Pitwall Remote", "See your agents and answer them from your phone. Everything between your phone and this Mac is end-to-end encrypted.",
-                    symbol: "iphone.radiowaves.left.and.right") {
-                    Toggle("", isOn: $prefs.remoteEnabled).labelsHidden().toggleStyle(.switch)
-                }
-                if prefs.remoteEnabled {
-                    Divider()
-                    HStack(spacing: 8) {
-                        Circle().fill(server.running ? Color(ns: Theme.green) : Color(ns: Theme.red)).frame(width: 7, height: 7)
-                        Text(server.running ? "Listening on \(RemoteServer.addresses.first ?? "this Mac")" : "Not running")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                        Spacer()
-                        Text("Works on your network now · anywhere once Pitwall Cloud is ready")
-                            .font(.system(size: 10)).foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            if prefs.remoteEnabled {
-                Card {
-                    HStack(alignment: .top, spacing: 20) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Pair a phone").font(.system(size: 13, weight: .semibold))
-                            Text("Scan this code with your phone's camera. It opens Pitwall Remote and pairs securely. The code works once and expires in 10 minutes.")
-                                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            if let offer = devices.offer, offer.expires > now, pairURL != nil {
-                                Text("Expires in \(Int(offer.expires.timeIntervalSince(now)) / 60):\(String(format: "%02d", Int(offer.expires.timeIntervalSince(now)) % 60))")
-                                    .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
-                                Button("Cancel") { devices.cancelOffer(); pairURL = nil }
-                            } else {
-                                Button("Show pairing code") { pairURL = server.pairingURL() }
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(!server.running)
-                            }
-                        }
-                        Spacer()
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 14).fill(Color.white)
-                            if let url = pairURL, let offer = devices.offer, offer.expires > now, let img = Self.qr(url.absoluteString) {
-                                Image(nsImage: img).interpolation(.none).resizable().padding(10)
-                            } else {
-                                Image(systemName: "qrcode").font(.system(size: 54)).foregroundStyle(Color.black.opacity(0.15))
-                            }
-                        }
-                        .frame(width: 170, height: 170)
-                    }
-                }
-                Card {
-                    Text("Paired devices").font(.system(size: 13, weight: .semibold))
-                    if devices.devices.isEmpty {
-                        Text("No phones paired yet.").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                    ForEach(devices.devices) { d in
-                        HStack(spacing: 10) {
-                            Image(systemName: "iphone").font(.system(size: 16)).frame(width: 22)
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(spacing: 6) {
-                                    Text(d.name).font(.system(size: 13, weight: .medium))
-                                    if server.connectedDevices.contains(d.id) {
-                                        Text("Connected").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(ns: Theme.green))
-                                    }
-                                }
-                                Text(d.lastSeen.map { "Last seen \($0.formatted(.relative(presentation: .named)))" } ?? "Paired \(d.addedAt.formatted(date: .abbreviated, time: .shortened))")
-                                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Revoke", role: .destructive) { devices.revoke(d.id) }
-                        }
-                    }
-                }
-            }
-        }
-        .onReceive(tick) { now = $0 }
-        .onChange(of: devices.devices) { _ in pairURL = nil }
-    }
-
-    static func qr(_ s: String) -> NSImage? {
-        let f = CIFilter.qrCodeGenerator()
-        f.message = Data(s.utf8)
-        f.correctionLevel = "M"
-        guard let out = f.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else { return nil }
-        let rep = NSCIImageRep(ciImage: out)
-        let img = NSImage(size: rep.size)
-        img.addRepresentation(rep)
-        return img
     }
 }

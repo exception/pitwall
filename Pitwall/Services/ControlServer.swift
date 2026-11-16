@@ -203,11 +203,6 @@ final class ControlServer {
             }
             return ok(.string(store.current.tiles.first { !before.contains($0.id) }?.id ?? ""))
 
-        case "remote.pair":
-            guard RemoteServer.shared.running else { return fail("Pitwall Remote is a work in progress and is disabled in this build.") }
-            guard let url = RemoteServer.shared.pairingURL() else { return fail("No network address found") }
-            return ok(.string(url.absoluteString))
-
         case "link.add":
             guard let a = req.tileID, let b = args["to"], store.findTile(a) != nil, store.findTile(b) != nil else {
                 return fail("both tiles must exist")

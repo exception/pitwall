@@ -18,7 +18,6 @@ pitwall — control Pitwall from the terminal
   pitwall search <text|/regex/>             Search every terminal's history (JSON)
   pitwall layout save <name> | <name> | list
                                             Save, restore or list layouts of the current board
-  pitwall remote pair                       (WIP) Print a one-time link to pair a phone
   pitwall link <tile> <tile> [--handoff]    Connect two tiles (--handoff: pass results downstream)
   pitwall open <path|url>                   Open a file, folder or URL as a tile
   pitwall tile close <id>                   Close a tile
@@ -340,10 +339,6 @@ case "pr":
 case "diff":
     let dir = rest.first.map { URL(fileURLWithPath: $0).standardizedFileURL.path } ?? FileManager.default.currentDirectoryPath
     do { exit(Control.printResult(try Control.send("tile.diff", args: ["cwd": dir]))) }
-    catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
-case "remote":
-    guard rest.first == "pair" else { fputs("remote pair\n", stderr); exit(2) }
-    do { exit(Control.printResult(try Control.send("remote.pair"))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "link":
     let ids = rest.filter { !$0.hasPrefix("--") }

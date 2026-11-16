@@ -5,9 +5,5 @@ DerivedData/
 vendor/ghostty/
 .DS_Store
 vendor/ghostty-vt-out/
-vendor/ghostty-vt-ios/
-vendor/ghostty-vt-iossim/
-remote-web/node_modules/
 Pitwall.xcodeproj/
-remote-web/test/*.log
 CLAUDE.md
