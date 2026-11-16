@@ -233,6 +233,8 @@ case "daemon":
     SessionDaemon().run()
 case "attach":
     exit(AttachCommand.run(rest))
+case "pty-exec":
+    exit(PtyExec.run(rest))
 case "hook":
     exit(runHook(rest))
 case "statusline":

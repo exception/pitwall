@@ -46,6 +46,56 @@ pid_t pw_spawn_pty(const char *path, char *const argv[], char *const envp[],
     return pid;
 }
 
+int pw_open_pty(unsigned short cols, unsigned short rows, int *master_out, int *slave_out,
+                char *name_out, int name_len) {
+    struct winsize ws = {0};
+    ws.ws_col = cols ? cols : 80;
+    ws.ws_row = rows ? rows : 24;
+    int master = -1, slave = -1;
+    if (openpty(&master, &slave, NULL, NULL, &ws) != 0) return -1;
+    const char *name = ttyname(slave);
+    if (!name || (int)strlen(name) >= name_len) { close(master); close(slave); return -1; }
+    strcpy(name_out, name);
+    fcntl(master, F_SETFD, fcntl(master, F_GETFD) | FD_CLOEXEC);
+    fcntl(slave, F_SETFD, fcntl(slave, F_GETFD) | FD_CLOEXEC);
+    *master_out = master;
+    *slave_out = slave;
+    return 0;
+}
+
+pid_t pw_exec_on_tty(const char *path, char *const argv[], char *const envp[],
+                     const char *cwd, const char *tty) {
+    pid_t pid = fork();
+    if (pid != 0) return pid;
+    // Child: a new session whose controlling terminal is the slave.
+    setsid();
+    int fd = open(tty, O_RDWR);
+    if (fd < 0) _exit(126);
+    ioctl(fd, TIOCSCTTY, 0);
+    dup2(fd, 0);
+    dup2(fd, 1);
+    dup2(fd, 2);
+    if (fd > 2) close(fd);
+    signal(SIGINT, SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
+    signal(SIGPIPE, SIG_DFL);
+    signal(SIGCHLD, SIG_DFL);
+    signal(SIGHUP, SIG_DFL);
+    signal(SIGTERM, SIG_DFL);
+    sigset_t none;
+    sigemptyset(&none);
+    sigprocmask(SIG_SETMASK, &none, NULL);
+    if (cwd && cwd[0]) {
+        if (chdir(cwd) != 0) chdir(getenv("HOME") ? getenv("HOME") : "/");
+    }
+    execve(path, argv, envp);
+    _exit(127);
+}
+
+pid_t pw_tty_session(int master) {
+    return tcgetsid(master);
+}
+
 int pw_set_winsize(int fd, unsigned short cols, unsigned short rows) {
     struct winsize ws = {0};
     ws.ws_col = cols;

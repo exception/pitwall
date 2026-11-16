@@ -9,7 +9,8 @@ final class SessionDaemon {
 
     final class Session {
         let id: String
-        let pid: pid_t
+        /// The shell's pid. 0 while a launchd-started session hasn't claimed its terminal yet.
+        var pid: pid_t
         let master: Int32
         let startedAt = Date()
         let cwd: String?
@@ -24,6 +25,17 @@ final class SessionDaemon {
         var observers: [Client] = []
         var readSource: DispatchSourceRead?
         var procSource: DispatchSourceProcess?
+        /// Started as its own launchd job: not our child, so its exit code
+        /// comes from this file (written by `pitwall pty-exec`).
+        var exitFile: String?
+        /// Killed before it started; delivered once the pid is known.
+        var killPending = false
+
+        /// Hangs up the session's process group (no-op until the pid is known).
+        func hangUp() {
+            guard pid > 0 else { killPending = true; return }
+            kill(-pid, SIGHUP); kill(pid, SIGHUP)
+        }
 
         init(id: String, pid: pid_t, master: Int32, cwd: String?, cols: UInt16, rows: UInt16) {
             self.id = id; self.pid = pid; self.master = master; self.cwd = cwd
@@ -146,6 +158,8 @@ final class SessionDaemon {
             exit(1)
         }
         logLine("daemon started pid=\(getpid())")
+        // Leftovers of a previous daemon's launches.
+        try? FileManager.default.removeItem(at: Self.jobsDir)
         let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .global())
         src.setEventHandler { [weak self] in
             let client = accept(fd, nil, nil)
@@ -179,7 +193,7 @@ final class SessionDaemon {
         case .kill:
             q.sync {
                 if let id = req.id, let s = sessions[id] {
-                    if s.alive { kill(-s.pid, SIGHUP); kill(s.pid, SIGHUP) }
+                    if s.alive { s.hangUp() }
                     if !s.alive { sessions[id] = nil }
                 }
             }
@@ -194,7 +208,7 @@ final class SessionDaemon {
             reply(fd, DaemonResponse(ok: text != nil, text: text)); close(fd)
         case .shutdown:
             reply(fd, DaemonResponse(ok: true)); close(fd)
-            q.sync { for s in sessions.values where s.alive { kill(-s.pid, SIGHUP) } }
+            q.sync { for s in sessions.values where s.alive { s.hangUp() } }
             exit(0)
         case .attach:
             attach(fd, req, pending: rest)
@@ -367,18 +381,36 @@ final class SessionDaemon {
         }
         var master: Int32 = -1
         let cwd = req.cwd ?? env["HOME"]
-        let pid = cArgv.withUnsafeBufferPointer { a in
-            cEnv.withUnsafeBufferPointer { e in
-                pw_spawn_pty(path, a.baseAddress, e.baseAddress, cwd, cols, rows, &master)
+        // Preferably as a launchd job of its own (see launchJob); the old
+        // way, a child of the daemon, when launchd won't take it.
+        var job: (exitFile: String, slave: Int32)?
+        if Self.useLaunchd {
+            var slave: Int32 = -1
+            var name = [CChar](repeating: 0, count: 128)
+            if pw_open_pty(cols, rows, &master, &slave, &name, Int32(name.count)) == 0 {
+                if let exitFile = launchJob(id: id, path: path, argv: argv, env: env, cwd: cwd, tty: String(cString: name)) {
+                    job = (exitFile, slave)
+                } else {
+                    close(master); close(slave); master = -1
+                }
             }
         }
-        guard pid > 0 else { logLine("spawn failed for \(id): errno=\(errno)"); return nil }
+        var pid: pid_t = 0
+        if job == nil {
+            pid = cArgv.withUnsafeBufferPointer { a in
+                cEnv.withUnsafeBufferPointer { e in
+                    pw_spawn_pty(path, a.baseAddress, e.baseAddress, cwd, cols, rows, &master)
+                }
+            }
+            guard pid > 0 else { logLine("spawn failed for \(id): errno=\(errno)"); return nil }
+        }
         let flags = fcntl(master, F_GETFL)
         _ = fcntl(master, F_SETFL, flags | O_NONBLOCK)
 
         let s = Session(id: id, pid: pid, master: master, cwd: cwd, cols: cols, rows: rows)
+        s.exitFile = job?.exitFile
         sessions[id] = s
-        logLine("spawned \(id) pid=\(pid) argv=\(argv)")
+        logLine("spawned \(id) " + (job == nil ? "pid=\(pid)" : "via launchd") + " argv=\(argv)")
 
         let rs = DispatchSource.makeReadSource(fileDescriptor: master, queue: q)
         var buf = [UInt8](repeating: 0, count: 65536)
@@ -404,11 +436,20 @@ final class SessionDaemon {
         rs.resume()
         s.readSource = rs
 
-        let ps = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: q)
+        if let job {
+            awaitShell(s, slave: job.slave, deadline: Date().addingTimeInterval(10))
+        } else {
+            watchExit(s)
+        }
+        return s
+    }
+
+    private func watchExit(_ s: Session) {
+        let ps = DispatchSource.makeProcessSource(identifier: s.pid, eventMask: .exit, queue: q)
         ps.setEventHandler { [weak self, weak s] in
             guard let s else { return }
             var status: Int32 = 0
-            if waitpid(s.pid, &status, WNOHANG) == s.pid {
+            if s.exitFile == nil, waitpid(s.pid, &status, WNOHANG) == s.pid {
                 let exited = status & 0x7f == 0
                 s.exitCode = exited ? (status >> 8) & 0xff : 128 + (status & 0x7f)
             }
@@ -417,14 +458,114 @@ final class SessionDaemon {
         }
         ps.resume()
         s.procSource = ps
-        return s
+        // Already gone before the source was armed (a launchd session that exited at once).
+        if kill(s.pid, 0) != 0 && errno == ESRCH { q.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.finish(s) } }
+    }
+
+    // MARK: Launchd sessions
+
+    /// Sessions start as launchd jobs unless PITWALL_NO_LAUNCHD is set.
+    static let useLaunchd = (ProcessInfo.processInfo.environment["PITWALL_NO_LAUNCHD"] ?? "").isEmpty
+    static var jobsDir: URL { PitwallPaths.runDir.appendingPathComponent("jobs", isDirectory: true) }
+    private var jobCounter = 0
+
+    /// Starts the shell on `tty` as a launchd job of its own, through
+    /// `pitwall pty-exec`. Each job is its own coalition, so macOS treats each
+    /// session as a separate app. A child of the daemon would share one
+    /// coalition with every other session, and force-quitting anything one of
+    /// them started (a dev tool's window, say) makes macOS kill the hidden
+    /// background apps of all of them: agents' MCP servers, and the agents
+    /// with them. Returns the exit-code file, or nil if launchd refused.
+    private func launchJob(id: String, path: String, argv: [String], env: [String: String], cwd: String?, tty: String) -> String? {
+        let helper = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        jobCounter += 1
+        let label = "dev.pitwall.session.\(getpid()).\(jobCounter).\(id)"
+        let dir = Self.jobsDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let spec = dir.appendingPathComponent(label + ".json")
+        let exitFile = dir.appendingPathComponent(label + ".exit").path
+        let plist = dir.appendingPathComponent(label + ".plist")
+        let job = PtyExecSpec(path: path, argv: argv, env: env, cwd: cwd, tty: tty, exitFile: exitFile)
+        let jobPlist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [helper, "pty-exec", spec.path],
+            "RunAtLoad": true,
+            "KeepAlive": false,
+            "LaunchOnlyOnce": true,
+            // Leave what the session started running when it ends, as a terminal would.
+            "AbandonProcessGroup": true,
+            "ProcessType": "Interactive",
+        ]
+        do {
+            try Wire.encoder.encode(job).write(to: spec, options: .atomic)
+            chmod(spec.path, 0o600)
+            try PropertyListSerialization.data(fromPropertyList: jobPlist, format: .xml, options: 0).write(to: plist)
+        } catch {
+            logLine("launchd job for \(id): \(error)")
+            return nil
+        }
+        defer { try? FileManager.default.removeItem(at: plist) }
+        let status = Self.run("/bin/launchctl", ["bootstrap", "gui/\(getuid())", plist.path])
+        guard status == 0 else {
+            logLine("launchctl bootstrap failed for \(id) (\(status)); starting it directly")
+            try? FileManager.default.removeItem(at: spec)
+            return nil
+        }
+        return exitFile
+    }
+
+    /// Waits for the job's shell to claim its terminal, then watches it like
+    /// a child. The daemon holds the slave open until then, so the master
+    /// doesn't see a hangup before the shell has opened it.
+    private func awaitShell(_ s: Session, slave: Int32, deadline: Date) {
+        let sid = pw_tty_session(s.master)
+        if sid > 0 {
+            s.pid = sid
+            close(slave)
+            watchExit(s)
+            if s.killPending { s.hangUp() }
+            return
+        }
+        guard s.alive, Date() < deadline else {
+            logLine("session \(s.id) never started")
+            close(slave)
+            s.exitCode = s.exitCode ?? 127
+            finish(s)
+            return
+        }
+        q.asyncAfter(deadline: .now() + 0.01) { [weak self] in self?.awaitShell(s, slave: slave, deadline: deadline) }
+    }
+
+    /// Runs a program to completion; its exit status, or -1.
+    static func run(_ path: String, _ args: [String]) -> Int32 {
+        var pid: pid_t = 0
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        for fd: Int32 in [0, 1, 2] { posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", O_RDWR, 0) }
+        let argv = ([path] + args).map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        guard posix_spawn(&pid, path, &actions, nil, argv, environ) == 0 else { return -1 }
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        return status & 0x7f == 0 ? (status >> 8) & 0xff : -1
     }
 
     /// Must be called on `q`.
     private func finish(_ s: Session) {
         guard s.alive else { return }
         s.alive = false
-        if s.exitCode == nil {
+        if s.exitCode == nil, let f = s.exitFile {
+            // pty-exec writes it right after the shell exits.
+            for _ in 0..<20 {
+                if let t = try? String(contentsOfFile: f, encoding: .utf8), let c = Int32(t.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    s.exitCode = c
+                    break
+                }
+                usleep(5_000)
+            }
+            try? FileManager.default.removeItem(atPath: f)
+        } else if s.exitCode == nil, s.pid > 0 {
             var status: Int32 = 0
             for _ in 0..<40 {
                 if waitpid(s.pid, &status, WNOHANG) == s.pid {
@@ -449,3 +590,40 @@ final class SessionDaemon {
     }
 }
 
+
+/// What `pitwall pty-exec` runs, handed over in a file by the daemon.
+struct PtyExecSpec: Codable {
+    var path: String
+    var argv: [String]
+    var env: [String: String]
+    var cwd: String?
+    var tty: String
+    var exitFile: String
+}
+
+/// `pitwall pty-exec <spec>`: the main process of a session's launchd job.
+/// Starts the shell on the session's terminal, waits for it, and leaves its
+/// exit code where the daemon reads it.
+enum PtyExec {
+    static func run(_ args: [String]) -> Int32 {
+        guard let path = args.first, let data = FileManager.default.contents(atPath: path),
+              let spec = try? Wire.decoder.decode(PtyExecSpec.self, from: data) else { return 2 }
+        try? FileManager.default.removeItem(atPath: path)
+        let cArgv = spec.argv.map { strdup($0) } + [nil]
+        let cEnv = spec.env.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        let pid = cArgv.withUnsafeBufferPointer { a in
+            cEnv.withUnsafeBufferPointer { e in pw_exec_on_tty(spec.path, a.baseAddress, e.baseAddress, spec.cwd, spec.tty) }
+        }
+        guard pid > 0 else { return 1 }
+        // The terminal hangs up on the shell, not on us; outlive it to report.
+        signal(SIGHUP, SIG_IGN)
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        let code = status & 0x7f == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
+        let tmp = spec.exitFile + ".tmp"
+        if FileManager.default.createFile(atPath: tmp, contents: Data("\(code)\n".utf8)) {
+            rename(tmp, spec.exitFile)
+        }
+        return 0
+    }
+}
