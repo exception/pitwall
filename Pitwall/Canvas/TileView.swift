@@ -52,7 +52,7 @@ final class TileView: NSView {
     /// Agents become status cards below 50%: their status matters more than
     /// tiny text. Other tiles stay live miniatures until they're very small.
     var showsCard: Bool {
-        let agentLike = tile.kind == .agent || tile.kind == .subagent
+        let agentLike = tile.kind == .agent || tile.kind == .subagent || tile.kind == .remote
         return zoom < (agentLike ? CGFloat(Prefs.shared.cardZoom) : 0.18)
     }
 
@@ -145,7 +145,7 @@ final class TileView: NSView {
         titleField.stringValue = tile.displayName
         var sub: [String] = []
         if let b = tile.branch { sub.append(b) }
-        else if tile.isTerminalBacked, let cwd = tile.cwd { sub.append(Self.abbreviate(cwd)) }
+        else if tile.isTerminalBacked || tile.kind == .remote, let cwd = tile.cwd { sub.append(Self.abbreviate(cwd)) }
         else if tile.kind == .browser, let t = tile.target { sub.append(t) }
         subtitleField.stringValue = sub.joined(separator: " · ")
         metaField.attributedStringValue = metaString()

@@ -199,6 +199,24 @@ final class TerminalSurfaceView: NSView, NSTextInputClient {
         return true
     }
 
+    /// Ctrl+C, as a real key press (interrupts the foreground program).
+    func pressControlC() {
+        guard let surface else { return }
+        var ev = ghostty_input_key_s()
+        ev.action = GHOSTTY_ACTION_PRESS
+        ev.keycode = 0x08 // kVK_ANSI_C
+        ev.mods = GHOSTTY_MODS_CTRL
+        ev.consumed_mods = GHOSTTY_MODS_NONE
+        ev.unshifted_codepoint = 0x63 // "c"
+        "c".withCString { p in
+            ev.text = p
+            _ = ghostty_surface_key(surface, ev)
+        }
+        ev.action = GHOSTTY_ACTION_RELEASE
+        ev.text = nil
+        _ = ghostty_surface_key(surface, ev)
+    }
+
     private func pressControlV() {
         guard let surface else { return }
         var ev = ghostty_input_key_s()

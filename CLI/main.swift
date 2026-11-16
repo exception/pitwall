@@ -15,6 +15,7 @@ pitwall — control Pitwall from the terminal
                                             (--auto-send: failures go to the calling agent)
   pitwall pr [NUMBER|URL] [--cwd DIR]       Follow a pull request (default: this branch's PR)
   pitwall server [--cwd DIR] -- CMD...      Run a dev server that restarts if it crashes
+  pitwall rc [--cwd DIR] [--worktree]       Start Claude Remote Control; phone sessions open as tiles
   pitwall search <text|/regex/>             Search every terminal's history (JSON)
   pitwall layout save <name> | <name> | list
                                             Save, restore or list layouts of the current board
@@ -140,6 +141,8 @@ func runHook(_ args: [String]) -> Int32 {
     alarm(waits ? 590 : 3)
     let input = FileHandle.standardInput.readDataToEndOfFile()
     var a: [String: String] = ["event": event]
+    // Spawned by `claude remote-control`: the hook carries the host tile's id.
+    if ProcessInfo.processInfo.environment["CLAUDE_CODE_ENVIRONMENT_KIND"] == "bridge" { a["bridge"] = "1" }
     if let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any] {
         for key in ["message", "tool_name", "session_id", "notification_type", "prompt", "cwd", "transcript_path",
                     "stop_hook_active", "tool_use_id", "agent_id", "agent_type", "last_assistant_message", "permission_mode"] {
@@ -190,6 +193,10 @@ func runStatusLine() -> Int32 {
             if let t = cw["total_output_tokens"] { a["output_tokens"] = "\(t)" }
         }
         if let m = obj["model"] as? [String: Any], let n = m["display_name"] { a["model"] = "\(n)" }
+        if ProcessInfo.processInfo.environment["CLAUDE_CODE_ENVIRONMENT_KIND"] == "bridge" {
+            a["bridge"] = "1"
+            if let s = obj["session_id"] { a["session_id"] = "\(s)" }
+        }
         if Control.tileID != nil { _ = try? Control.send("agent.usage", args: a, timeout: 1.5) }
         let cost = Double(a["cost"] ?? "") ?? 0
         line = "\(a["model"] ?? "Claude") · $" + String(format: "%.2f", cost) + (a["context_pct"].map { " · \($0)% context" } ?? "")
@@ -340,6 +347,15 @@ case "diff":
     let dir = rest.first.map { URL(fileURLWithPath: $0).standardizedFileURL.path } ?? FileManager.default.currentDirectoryPath
     do { exit(Control.printResult(try Control.send("tile.diff", args: ["cwd": dir]))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
+case "rc":
+    var a: [String: String] = ["cwd": FileManager.default.currentDirectoryPath]
+    var i = 0
+    while i < rest.count {
+        if rest[i] == "--cwd" { i += 1; a["cwd"] = rest[safe: i] } else if rest[i] == "--worktree" { a["worktree"] = "1" }
+        i += 1
+    }
+    do { exit(Control.printResult(try Control.send("rc.start", args: a))) }
+    catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
 case "link":
     let ids = rest.filter { !$0.hasPrefix("--") }
     guard ids.count == 2 else { fputs("link <tile> <tile> [--handoff]\n", stderr); exit(2) }

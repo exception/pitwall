@@ -31,6 +31,8 @@ enum AgentState: String, Codable, CaseIterable {
 
 enum TileKind: String, Codable {
     case terminal, agent, note, code, image, browser, diff, logs, subagent, compare, pr, run
+    /// A Claude Code session started from a phone through a Remote Control host.
+    case remote
 }
 
 /// A tile on a board. Frames are in world coordinates (points at 100% zoom).
@@ -93,6 +95,11 @@ struct Tile: Codable, Identifiable, Equatable {
     var waitNote: String?
     /// Run tiles: the run's repo (owner/name) when it isn't the cwd's; target is the run id.
     var runRepo: String?
+    /// Remote Control host terminals: how new sessions get their folder
+    /// ("same-dir" or "worktree").
+    var rcSpawn: String?
+    /// Remote session tiles: Claude Code's session id (target is the transcript).
+    var rcSession: String?
 
     var displayName: String {
         if let name, !name.isEmpty { return name }

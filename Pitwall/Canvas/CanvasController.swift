@@ -178,7 +178,9 @@ final class CanvasController: NSObject {
                 let id = t.id
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.flushInbox(id) }
             }
-            return TerminalTileContent(surface: surface)
+            let term = TerminalTileContent(surface: surface)
+            if t.rcSpawn != nil { return RemoteHostTileContent(tileID: t.id, terminal: term, controller: self) }
+            return term
         case .browser:
             let b = BrowserTileContent(url: t.target ?? "http://localhost:3000")
             let id = t.id
@@ -199,6 +201,8 @@ final class CanvasController: NSObject {
             return SubagentTileContent()
         case .run:
             return RunTileContent(tileID: t.id, controller: self)
+        case .remote:
+            return RemoteTileContent(tileID: t.id, controller: self)
         case .pr:
             return PRTileContent(tileID: t.id, repo: t.target ?? t.cwd ?? NSHomeDirectory(), ref: t.prRef, controller: self)
         case .compare:
@@ -211,7 +215,8 @@ final class CanvasController: NSObject {
     private var sessions: [String: TerminalSession] = [:]
 
     func surface(for tileID: String) -> TerminalSurfaceView? {
-        (tileViews[tileID]?.content as? TerminalTileContent)?.surface
+        let c = tileViews[tileID]?.content
+        return ((c as? TerminalTileContent) ?? (c as? RemoteHostTileContent)?.terminal)?.surface
     }
 
     // MARK: Creating tiles
@@ -229,6 +234,7 @@ final class CanvasController: NSObject {
         case .compare: return CGSize(width: 726, height: 330)
         case .pr: return CGSize(width: 528, height: 572)
         case .run: return CGSize(width: 528, height: 484)
+        case .remote: return CGSize(width: 572, height: 616)
         }
     }
 
@@ -448,6 +454,8 @@ final class CanvasController: NSObject {
         sessions[id] = nil
         hookedTiles.remove(id)
         RunStore.shared.forget(id)
+        // A closed Remote session stays closed even as its hooks keep coming.
+        if let s = t.rcSession { dismissedRemote.insert(s) }
         store.update(owner.id) { b in
             b.tiles.removeAll { $0.id == id }
             // Sub-agents go with their parent.
@@ -707,6 +715,7 @@ final class CanvasController: NSObject {
         m.addItem(MenuAction("New browser") { [weak self] in self?.open(target: "http://localhost:3000", at: w) })
         m.addItem(MenuAction("Watch a command…") { [weak self] in self?.promptWatch(at: w) })
         m.addItem(MenuAction("Run dev server…") { [weak self] in self?.promptServer(at: w) })
+        m.addItem(MenuAction("Start Remote Control…") { [weak self] in self?.promptRemoteControl(at: w) })
         m.addItem(MenuAction("Follow pull request") { [weak self] in
             guard let self else { return }
             self.newPR(repo: self.board.root ?? self.defaultCwd, at: w)
@@ -969,6 +978,8 @@ final class CanvasController: NSObject {
             handOff(from: tileID, result: args["last_assistant_message"] ?? "")
         case "SessionEnd":
             endBackground(of: tileID)
+            // A remote session that finished its work stays Done when its process goes away.
+            if let t = store.findTile(tileID)?.tile, t.kind == .remote, t.state == .done || t.state == .error { break }
             setState(tileID, .idle, message: nil)
         default:
             break
@@ -1371,7 +1382,8 @@ final class CanvasController: NSObject {
                         }
                     }
                 }
-                if isAgent && t.kind == .terminal {
+                // A Remote Control host runs claude too, but it's a terminal, not an agent.
+                if isAgent && t.kind == .terminal && t.rcSpawn == nil {
                     store.updateTile(t.id) { $0.kind = .agent; if $0.autoName == nil { $0.autoName = fg.first?.isNumber == true ? "Claude" : fg.capitalized } }
                 }
                 if let cwd = info.foregroundCwd, cwd != t.cwd { store.updateTile(t.id) { $0.cwd = cwd } }
@@ -1425,6 +1437,8 @@ final class CanvasController: NSObject {
     /// Run tiles: last poll, and polls in flight.
     var runPolledAt: [String: Date] = [:]
     var runLoading = Set<String>()
+    /// Remote Control sessions whose tile was closed.
+    var dismissedRemote = Set<String>()
     /// Agent → watch tile whose failure it was sent; rerun the watch when it finishes.
     var fixRequests: [String: String] = [:]
     var pendingPlacement: (point: CGPoint?, frameID: String?, expires: Date)?

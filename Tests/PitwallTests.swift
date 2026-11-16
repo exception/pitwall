@@ -189,4 +189,78 @@ final class PitwallTests: XCTestCase {
         XCTAssertTrue(r.failureSummary.contains("test: failure at step \"Run tests\""))
         XCTAssertEqual((185.0 as TimeInterval).clock, "3m 05s")
     }
+
+    // MARK: Remote Control
+
+    func testTranscriptReaderBuildsConversation() throws {
+        let lines = [
+            #"{"type":"bridge-session","sessionId":"s","bridgeSessionId":"cse_01ABC"}"#,
+            #"{"type":"user","uuid":"u1","message":{"role":"user","content":"Fix the bestLap test"}}"#,
+            #"{"type":"user","uuid":"m","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>x</local-command-caveat>"}}"#,
+            #"{"type":"assistant","uuid":"a1","message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"npm test\nmore"}}]}}"#,
+            #"{"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"1 failing"}]}}"#,
+            #"{"type":"assistant","uuid":"a2","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"Edit","input":{"file_path":"/x/src/laps.js"}}]}}"#,
+            #"{"type":"assistant","uuid":"a3","isSidechain":true,"message":{"content":[{"type":"text","text":"sub-agent chatter"}]}}"#,
+            #"{"type":"assistant","uuid":"a4","message":{"content":[{"type":"text","text":"Fixed it."}]}}"#,
+            #"{"type":"ai-title","aiTitle":"Fix bestLap","sessionId":"s"}"#,
+            #"{"type":"cost-state","totalCostUSD":0.42}"#,
+        ]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pw-transcript-\(UUID().uuidString).jsonl")
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let r = TranscriptReader(path: url.path)
+        XCTAssertTrue(r.read())
+        let t = r.transcript
+        XCTAssertEqual(t.items, [
+            .prompt(id: "u1", text: "Fix the bestLap test"),
+            .tool(id: "toolu_1", name: "Bash", summary: "npm test", status: .failed),
+            .tool(id: "toolu_2", name: "Edit", summary: "laps.js", status: .running),
+            .reply(id: "a4-0", text: "Fixed it."),
+        ])
+        XCTAssertEqual(t.title, "Fix bestLap")
+        XCTAssertEqual(t.cost, 0.42)
+        XCTAssertEqual(t.model, "claude-opus-5-5")
+        XCTAssertEqual(t.url?.absoluteString, "https://claude.ai/code/session_01ABC")
+        XCTAssertFalse(r.read(), "nothing new")
+        // Appended lines are picked up incrementally.
+        let h = try FileHandle(forWritingTo: url)
+        h.seekToEndOfFile()
+        h.write(Data((#"{"type":"user","uuid":"r2","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2"}]}}"# + "\n").utf8))
+        try h.close()
+        XCTAssertTrue(r.read())
+        XCTAssertEqual(r.transcript.items[2], .tool(id: "toolu_2", name: "Edit", summary: "laps.js", status: .ok))
+        XCTAssertEqual(RemoteSessionView.modelName("claude-opus-5-5"), "Opus 5.5")
+    }
+
+    func testRemoteHostStatusParsing() {
+        let connected = """
+        Remote Control starts Claude Code sessions in this folder, driven from your other devices:
+        ·✔︎· Connected · trackside · main
+            Capacity: 2/32 · New sessions will be created in the current directory
+        Continue coding in the Claude mobile app or https://claude.ai/code?environment=env_01Ff34a2
+        space to show QR code · w to toggle spawn mode
+        """
+        let s = RemoteHostStatus.parse(connected, shellInForeground: false)
+        XCTAssertEqual(s.phase, .connected)
+        XCTAssertEqual(s.capacity?.used, 2)
+        XCTAssertEqual(s.capacity?.total, 32)
+        XCTAssertEqual(s.worktreeSpawn, false)
+        XCTAssertEqual(s.environmentURL?.absoluteString, "https://claude.ai/code?environment=env_01Ff34a2")
+
+        let ready = "Remote Control starts Claude Code sessions\n[21:47:39] Session failed: Process exited with error cse_01\n·✔︎· Ready · trackside · main\n    Capacity: 0/32 · New sessions will be created in the current directory"
+        XCTAssertEqual(RemoteHostStatus.parse(ready, shellInForeground: false).phase, .connected)
+        let later = connected + "\n[21:50:19] Session failed: Process exited with error cse_02"
+        XCTAssertEqual(RemoteHostStatus.parse(later, shellInForeground: false).phase, .connected)
+        let trust = "Remote Control starts Claude Code sessions in this folder\nTrust /x/repo? [y/N] "
+        XCTAssertEqual(RemoteHostStatus.parse(trust, shellInForeground: false).phase, .needsTrust)
+        XCTAssertEqual(RemoteHostStatus.parse(connected + "\n% ", shellInForeground: true).phase, .stopped)
+        let failed = "Remote Control starts Claude Code sessions\nError: this folder is already being served by another `claude remote-control` instance"
+        XCTAssertEqual(RemoteHostStatus.parse(failed, shellInForeground: false).phase, .failed)
+    }
+
+    func testMarkdownBlocks() {
+        let b = MarkdownBlocks.blocks("Done.\n\n- **Bug:** fixed\n  - nested\n1. first\n## Notes\n```\nnpm test\n```\ntail")
+        XCTAssertEqual(b, [.para("Done."), .bullet("**Bug:** fixed", 0), .bullet("nested", 1), .numbered("1.", "first"),
+                           .heading("Notes"), .code("npm test"), .para("tail")])
+    }
 }

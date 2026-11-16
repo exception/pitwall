@@ -117,11 +117,13 @@ final class ControlServer {
     /// A Claude Code permission request: register it on the main thread, then
     /// wait here (off-main) until the user decides in Pitwall.
     private func handlePermission(_ req: ControlRequest) -> ControlResponse {
-        guard let tile = req.tileID else { return ok() }
+        guard let raw = req.tileID else { return ok() }
         let args = req.args ?? [:]
         var pending: ApprovalCenter.Pending?
+        var tile = raw
         DispatchQueue.main.sync {
-            guard let ctl = self.controller, ctl.store.findTile(tile) != nil else { return }
+            guard let ctl = self.controller, let id = ctl.resolveHookTile(raw, args: args), ctl.store.findTile(id) != nil else { return }
+            tile = id
             pending = ApprovalCenter.shared.register(tileID: tile, args: args)
             ctl.permissionRequested(tile, pending!)
         }
@@ -236,6 +238,10 @@ final class ControlServer {
             ctl.watchExited(id, code: Int(args["code"] ?? "") ?? 1)
             return ok()
 
+        case "rc.start":
+            ensureBoard(of: from)
+            return ok(.string(ctl.startRemoteControl(cwd: args["cwd"], worktree: args["worktree"] == "1", at: near(from))))
+
         case "tile.server":
             guard let cmd = args["command"], !cmd.isEmpty else { return fail("command required") }
             ensureBoard(of: from)
@@ -293,7 +299,16 @@ final class ControlServer {
             case "appearance": Prefs.shared.appearance = text
             case "devmode": Prefs.shared.devMode = text != "off"
             case "fullscreen": ctl.toggleFullScreen(text.isEmpty ? nil : text)
-            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode|fullscreen")
+            case "snapshot":
+                // Renders the window in-process (no screen-recording permission
+                // needed). Metal-backed terminals may come out blank.
+                guard !text.isEmpty, let v = ctl.canvas.window?.contentView,
+                      let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return fail("ui snapshot <path.png>") }
+                v.cacheDisplay(in: v.bounds, to: rep)
+                guard let png = rep.representation(using: .png, properties: [:]),
+                      (try? png.write(to: URL(fileURLWithPath: text))) != nil else { return fail("couldn't write \(text)") }
+                return ok(.string(text))
+            default: return fail("ui dispatch|search|inbox|approve|close|sidebar|appearance|devmode|fullscreen|snapshot")
             }
             return ok()
 
@@ -417,7 +432,7 @@ final class ControlServer {
             return ok()
 
         case "agent.usage":
-            guard let id = req.tileID ?? from, store.findTile(id) != nil else { return ok() }
+            guard let raw = req.tileID ?? from, let id = ctl.resolveHookTile(raw, args: args), store.findTile(id) != nil else { return ok() }
             store.updateTile(id) { t in
                 if let c = Double(args["cost"] ?? "") { t.costUSD = c }
                 if let p = Double(args["context_pct"] ?? "") { t.contextPct = Int(p) }
@@ -427,7 +442,7 @@ final class ControlServer {
             return ok()
 
         case "agent.hook":
-            guard let id = req.tileID else { return ok() }
+            guard let raw = req.tileID, let id = ctl.resolveHookTile(raw, args: args) else { return ok() }
             if let out = ctl.handleHook(tileID: id, args: args) { return ok(.object(["hookOutput": .string(out)])) }
             return ok()
 

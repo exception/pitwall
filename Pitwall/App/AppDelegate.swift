@@ -152,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             key(MenuAction("New Frame", key: "g") { ctl.newFrame() }, [.command, .shift]),
             MenuAction("Watch a Command…") { ctl.promptWatch() },
             MenuAction("Run Dev Server…") { ctl.promptServer() },
+            MenuAction("Start Remote Control…") { ctl.promptRemoteControl() },
             MenuAction("Follow Pull Request") { ctl.newPR(repo: ctl.board.root ?? ctl.defaultCwd) },
             MenuAction("Open…", key: "o") { model.chooseFile { ctl.open(target: $0.path) } },
             .separator(),

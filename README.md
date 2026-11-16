@@ -35,6 +35,8 @@ Pitwall puts every agent on an infinite canvas as a real terminal tile, reads th
 
 **Agents that work together.** Draw a link between two tiles and the agents can message each other through Pitwall's MCP server. Turn a link into a hand-off and one agent's result becomes the next one's task. Link a note to an agent and it becomes shared context on every prompt. "Review with a new agent" starts a reviewer on the same checkout.
 
+**Start sessions from your phone.** Start Remote Control on a board (File > Start Remote Control…, or `pitwall rc`) and Pitwall runs `claude remote-control` for the folder, with a QR code to pair your phone. Every session you start from the Claude app or claude.ai opens as a tile next to it: the conversation live, tool calls as they run, and approvals you can answer on the tile or in the Inbox.
+
 **Everything around the agent.**
 - **Diff tiles** follow a checkout live, with one click to open a PR.
 - **Watch tiles** run tests, builds or deploys and turn red when they fail, and the failure can go straight back to the agent.
@@ -82,6 +84,7 @@ pitwall agent "Fix the flaky login test" --worktree      # start an agent
 pitwall agent "Try three approaches" --count 3          # fan out
 pitwall watch --auto-send -- npm test                   # red when it fails; failures go to the calling agent
 pitwall server -- npm run dev                           # restarts on crash, opens a browser tile
+pitwall rc --worktree                                   # Remote Control: phone sessions open as tiles
 pitwall pr                                              # follow this branch's pull request
 pitwall search "/ECONNREFUSED|timeout/"                 # search every terminal's history
 pitwall link <tile> <tile> --handoff                    # pipeline two agents
