@@ -6,6 +6,11 @@ options:
   createIntermediateGroups: true
   developmentLanguage: en
 
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.6.0"
+
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -33,6 +38,7 @@ targets:
     dependencies:
       - target: pitwall-cli
         embed: false
+      - package: Sparkle
       - framework: vendor/ghostty/macos/GhosttyKit.xcframework
         embed: false
       - sdk: Carbon.framework

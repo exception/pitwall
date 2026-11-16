@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         RemoteServer.shared.controller = main.controller
         if Prefs.remoteAvailable { RemoteServer.shared.start() }
         NSApp.mainMenu = buildMenu()
+        _ = Updater.shared  // starts scheduled update checks (release builds)
         main.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         // Test/debug hook: open Settings on a section at launch.
@@ -132,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         menu("Pitwall", [
             NSMenuItem(title: "About Pitwall", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+            MenuAction("Check for Updates…") { Updater.shared.checkForUpdates() },
             .separator(),
             MenuAction("Settings…", key: ",") { SettingsWindowController.shared.show() },
             MenuAction("Reload Terminal Settings") { GhosttyRuntime.shared.reloadConfig() },

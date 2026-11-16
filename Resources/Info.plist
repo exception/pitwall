@@ -21,6 +21,9 @@
 	<key>NSLocalNetworkUsageDescription</key><string>Pitwall Remote lets your paired phone see and answer your agents over your network.</string>
 	<key>NSBonjourServices</key><array><string>_pitwall._tcp</string></array>
 	<key>NSAppleEventsUsageDescription</key><string>Programs running in Pitwall may want to control other apps.</string>
+	<key>SUFeedURL</key><string>https://github.com/exception/pitwall/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key><string>wwnJ58cz31aQvXFPIHrwVeBhSKWCoBekDmXYHNrAZTw=</string>
+	<key>SUEnableAutomaticChecks</key><true/>
 	<key>NSAppTransportSecurity</key>
 	<dict><key>NSAllowsLocalNetworking</key><true/><key>NSAllowsArbitraryLoadsInWebContent</key><true/></dict>
 </dict>

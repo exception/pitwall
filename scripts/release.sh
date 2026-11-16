@@ -1,7 +1,15 @@
 #!/bin/zsh
 # Builds a release of Pitwall and packages it as a drag-to-install DMG.
 #
-#   scripts/release.sh            # version from project.yml
+#   scripts/release.sh                          # version from project.yml
+#   scripts/release.sh --publish notes.md       # ...and create the GitHub release
+#
+# Updates: the app checks the appcast.xml attached to the latest GitHub release
+# (SUFeedURL in Info.plist). This script signs the DMG with the Sparkle EdDSA
+# key from your keychain (made once with Sparkle's generate_keys; never commit
+# it) and writes build/release/appcast.xml next to the DMG. Both files must be
+# attached to every release, or installed copies stop seeing updates.
+# CURRENT_PROJECT_VERSION must go up every release: Sparkle compares it.
 #
 # Signing: uses the first "Developer ID Application" identity in your
 # keychain (or $SIGN_ID). Without one the app is ad-hoc signed and macOS will
@@ -13,7 +21,14 @@
 #   xcrun notarytool store-credentials pitwall-notary --apple-id <id> --team-id <team> --password <app-specific-password>
 set -euo pipefail
 cd "${0:A:h}/.."
+PUBLISH=0; NOTES=""
+if [[ ${1:-} == --publish ]]; then
+  PUBLISH=1; NOTES=${2:-}
+  [[ -f $NOTES ]] || { echo "usage: $0 --publish <release-notes.md>"; exit 1; }
+fi
 VERSION=$(awk -F'"' '/MARKETING_VERSION/{print $2; exit}' project.yml)
+BUILD=$(awk -F'"' '/CURRENT_PROJECT_VERSION/{print $2; exit}' project.yml)
+REPO=exception/pitwall
 OUT=build/release
 DD=build/rel
 APP=$DD/Build/Products/Release/Pitwall.app
@@ -31,6 +46,13 @@ xcodebuild -project Pitwall.xcodeproj -scheme Pitwall -configuration Release -de
 
 echo "==> Signing"
 TS=(); [[ $SIGN_ID != "-" ]] && TS=(--timestamp)
+# Sparkle's helpers are nested code: sign them inside-out before the app.
+SPK=$APP/Contents/Frameworks/Sparkle.framework/Versions/B
+codesign --force --sign "$SIGN_ID" --options runtime $TS "$SPK/XPCServices/Installer.xpc"
+codesign --force --sign "$SIGN_ID" --options runtime $TS --preserve-metadata=entitlements "$SPK/XPCServices/Downloader.xpc"
+codesign --force --sign "$SIGN_ID" --options runtime $TS "$SPK/Autoupdate"
+codesign --force --sign "$SIGN_ID" --options runtime $TS "$SPK/Updater.app"
+codesign --force --sign "$SIGN_ID" --options runtime $TS "$APP/Contents/Frameworks/Sparkle.framework"
 codesign --force --sign "$SIGN_ID" --options runtime $TS "$APP/Contents/Helpers/pitwall"
 codesign --force --sign "$SIGN_ID" --options runtime $TS --entitlements Resources/Pitwall.entitlements "$APP"
 codesign --verify --strict --deep "$APP"
@@ -97,4 +119,38 @@ if [[ $SIGN_ID == "-" ]]; then
   echo "    Ad-hoc signed: fine on this Mac, blocked by Gatekeeper elsewhere. Needs a Developer ID to ship."
 elif (( ! CAN_NOTARIZE )); then
   echo "    Signed but not notarized: other Macs will warn. Set up '$NOTARY_PROFILE' (see top of this script)."
+fi
+
+echo "==> Writing the appcast"
+SIGN_UPDATE=$DD/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update
+ED=$($SIGN_UPDATE $DMG) || { echo "sign_update failed: is the Sparkle key in this keychain? (generate_keys -p)"; exit 1; }
+NOTES_HTML=""
+if [[ -n $NOTES ]]; then
+  NOTES_HTML=$(gh api -X POST /markdown -f mode=gfm -f context=$REPO -F text=@$NOTES)
+fi
+cat > $OUT/appcast.xml <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Pitwall</title>
+    <item>
+      <title>Pitwall $VERSION</title>
+      <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
+      <sparkle:version>$BUILD</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/$REPO/releases/tag/v$VERSION</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[$NOTES_HTML]]></description>
+      <enclosure url="https://github.com/$REPO/releases/download/v$VERSION/Pitwall-$VERSION.dmg" type="application/octet-stream" $ED />
+    </item>
+  </channel>
+</rss>
+EOF
+echo "==> $OUT/appcast.xml"
+
+if (( PUBLISH )); then
+  echo "==> Publishing v$VERSION"
+  gh release create v$VERSION $DMG $OUT/appcast.xml -R $REPO --title "Pitwall $VERSION" --notes-file $NOTES
+else
+  echo "    Publish with: gh release create v$VERSION $DMG $OUT/appcast.xml -R $REPO --title \"Pitwall $VERSION\" --notes-file <notes.md>"
 fi
