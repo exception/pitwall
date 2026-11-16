@@ -25,6 +25,8 @@ PUBLISH=0; NOTES=""
 if [[ ${1:-} == --publish ]]; then
   PUBLISH=1; NOTES=${2:-}
   [[ -f $NOTES ]] || { echo "usage: $0 --publish <release-notes.md>"; exit 1; }
+  # Keep a copy: the notes may live in build/release, which is wiped below.
+  cp "$NOTES" "${TMPDIR:-/tmp}/pitwall-release-notes.md"; NOTES="${TMPDIR:-/tmp}/pitwall-release-notes.md"
 fi
 VERSION=$(awk -F'"' '/MARKETING_VERSION/{print $2; exit}' project.yml)
 BUILD=$(awk -F'"' '/CURRENT_PROJECT_VERSION/{print $2; exit}' project.yml)
