@@ -24,9 +24,23 @@ enum Processes {
     /// turn has ended, whatever is left is background work. Each is labeled by
     /// the first non-shell process under it ("npm", "sleep").
     static func toolCommands(under leader: pid_t) -> [String] {
+        backgroundCommands(under: leader).map(\.label)
+    }
+
+    /// One command the agent left running.
+    struct Command {
+        /// The labeled process ("bun", not the `zsh -c` around it).
+        var pid: pid_t
+        var label: String
+        /// Where its output goes: the file the command redirected to, else
+        /// the file the agent collects the shell's output in.
+        var output: String?
+    }
+
+    static func backgroundCommands(under leader: pid_t) -> [Command] {
         let group = getpgid(leader)
         guard group > 0 else { return [] }
-        var out: [String] = []
+        var out: [Command] = []
         // The group leader may be a wrapper (npx, node) around the agent: look a few levels down.
         var frontier = [leader]
         for _ in 0..<3 where !frontier.isEmpty {
@@ -36,8 +50,8 @@ enum Processes {
                     let g = getpgid(c)
                     if g > 0 && g != group {
                         // Our own hook / status-line calls run the same way; they aren't work.
-                        let l = label(c)
-                        if l != "pitwall" { out.append(l) }
+                        let (pid, l) = labeled(c)
+                        if l != "pitwall" { out.append(Command(pid: pid, label: l, output: outputFile(pid) ?? outputFile(c))) }
                     } else { next.append(c) }
                 }
             }
@@ -46,13 +60,26 @@ enum Processes {
         return out
     }
 
-    private static func label(_ pid: pid_t) -> String {
+    private static func labeled(_ pid: pid_t) -> (pid_t, String) {
         var p = pid
         var n = name(p) ?? "command"
         for _ in 0..<4 where shells.contains(n) {
             guard let c = children(of: p).first, let cn = name(c) else { break }
             p = c; n = cn
         }
-        return n
+        return (p, n)
+    }
+
+    /// The regular file a process's stdout is written to, if it is one
+    /// (not a terminal, pipe or /dev/null).
+    static func outputFile(_ pid: pid_t) -> String? {
+        var info = vnode_fdinfowithpath()
+        let size = Int32(MemoryLayout<vnode_fdinfowithpath>.size)
+        guard proc_pidfdinfo(pid, 1, PROC_PIDFDVNODEPATHINFO, &info, size) == size else { return nil }
+        let path = withUnsafeBytes(of: &info.pvip.vip_path) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        guard !path.isEmpty, !path.hasPrefix("/dev/") else { return nil }
+        var st = stat()
+        guard stat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { return nil }
+        return path
     }
 }

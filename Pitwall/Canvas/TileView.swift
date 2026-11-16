@@ -39,6 +39,13 @@ final class TileView: NSView {
     private let fullButton = NSButton()
     private let galleryButton = NSButton()
     private let timelineButton = NSButton()
+    /// Invisible, over the "running bun" part of the meta line: shows that work.
+    private let backgroundButton = NSButton()
+    /// Output tiles: stops the command they follow.
+    private let stopButton = NSButton()
+    private var stopZoom: CGFloat = 0
+    /// Where the background segment sits in the meta line, if shown.
+    private var backgroundRange: NSRange?
     private var galleryPopover: NSPopover?
     private var timelinePopover: NSPopover?
     /// True while this tile is shown full screen (fills the window).
@@ -123,6 +130,23 @@ final class TileView: NSView {
         timelineButton.toolTip = "What this agent did"
         timelineButton.alphaValue = 0
         header.addSubview(timelineButton)
+        backgroundButton.isBordered = false
+        backgroundButton.title = ""
+        backgroundButton.isTransparent = true
+        backgroundButton.target = self
+        backgroundButton.action = #selector(backgroundClicked)
+        backgroundButton.toolTip = "Show what's running"
+        backgroundButton.setAccessibilityLabel("Show background work")
+        backgroundButton.isHidden = true
+        header.addSubview(backgroundButton)
+        stopButton.isBordered = false
+        stopButton.imagePosition = .imageLeading
+        stopButton.imageHugsTitle = true
+        stopButton.wantsLayer = true
+        stopButton.target = self
+        stopButton.action = #selector(stopClicked)
+        stopButton.isHidden = true
+        header.addSubview(stopButton)
 
         connector.cornerRadius = 6
         connector.borderWidth = 2
@@ -153,6 +177,11 @@ final class TileView: NSView {
         content.update(tile: tile)
         let n = tile.images?.count ?? 0
         galleryButton.isHidden = n == 0
+        let stoppable = tile.follows != nil && tile.state == .working
+        if stoppable != !stopButton.isHidden { stopZoom = 0 }
+        stopButton.isHidden = !stoppable
+        stopButton.toolTip = tile.follows.map { "Stop \($0)" }
+        stopButton.setAccessibilityLabel(stopButton.toolTip)
         galleryButton.setAccessibilityLabel("\(n) images")
         updateColors()
         needsLayout = true
@@ -173,10 +202,14 @@ final class TileView: NSView {
         if Prefs.shared.showCost, let c = tile.costUSD, c >= 0.01 { add(String(format: "$%.2f", c), Theme.text3) }
         if let a = tile.diffAdded, a > 0 { add("+\(a)", Theme.green) }
         if let r = tile.diffRemoved, r > 0 { add("−\(r)", Theme.red) }
+        backgroundRange = nil
         if tile.hasBackgroundWork, let bg = tile.background {
             let names = bg.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
             let one = names[0].hasPrefix("waiting on ") ? names[0] : "running \(names[0])"
-            add(bg.count == 1 ? one : "\(bg.count) in background" + (names.count == 1 ? " · \(names[0])" : ""), Theme.green)
+            let text = bg.count == 1 ? one : "\(bg.count) in background" + (names.count == 1 ? " · \(names[0])" : "")
+            add(text, Theme.green)
+            let n = (text as NSString).length
+            backgroundRange = NSRange(location: s.length - n, length: n)
         }
         if tile.isWaitingExternally, let w = tile.waitingOn {
             add("waiting on \(w) · \((tile.waitingSince ?? tile.stateSince).elapsedShort)", Theme.green)
@@ -192,7 +225,7 @@ final class TileView: NSView {
     }
 
     /// Called every few seconds to refresh timers.
-    func tick() { metaField.attributedStringValue = metaString(); statusCard.update(tile: tile) }
+    func tick() { metaField.attributedStringValue = metaString(); layoutBackgroundButton(); statusCard.update(tile: tile) }
 
     // MARK: Appearance
 
@@ -328,12 +361,28 @@ final class TileView: NSView {
             galleryButton.layer?.backgroundColor = Theme.pill.cgColor
             metaRight = galleryButton.frame.minX - 8 * zoom
         }
+        if !stopButton.isHidden {
+            if !liveZoom, stopZoom != zoom {
+                stopZoom = zoom
+                stopButton.attributedTitle = NSAttributedString(string: " Stop", attributes: [
+                    .font: NSFont.systemFont(ofSize: 11 * zoom, weight: .semibold), .foregroundColor: Theme.red])
+                stopButton.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)?
+                    .withSymbolConfiguration(.init(pointSize: 9 * zoom, weight: .semibold))
+                stopButton.contentTintColor = Theme.red
+            }
+            let sw = 58 * zoom
+            stopButton.frame = NSRect(x: metaRight - sw, y: (h - 22 * zoom) / 2, width: sw, height: 22 * zoom)
+            stopButton.layer?.cornerRadius = 11 * zoom
+            stopButton.layer?.backgroundColor = Theme.pill.cgColor
+            metaRight = stopButton.frame.minX - 8 * zoom
+        }
         // Center each label on its real line height (a fixed box puts the text high).
         func centered(_ f: NSTextField, x: CGFloat, w: CGFloat) -> NSRect {
             let lh = ceil(f.intrinsicContentSize.height)
             return NSRect(x: x, y: ((h - lh) / 2).rounded(), width: w, height: lh)
         }
         metaField.frame = centered(metaField, x: metaRight - metaW, w: metaW)
+        layoutBackgroundButton()
 
         let x0 = dot.frame.maxX + 10 * zoom
         let titleFont = titleField.font ?? .systemFont(ofSize: 14 * zoom, weight: .semibold)
@@ -563,6 +612,35 @@ final class TileView: NSView {
 
     override var frame: NSRect {
         didSet { if oldValue != frame { repositionPopovers() } }
+    }
+
+    /// Puts the invisible button over the background segment of the meta
+    /// line. The line is right-aligned, so measure from its end.
+    private func layoutBackgroundButton() {
+        let str = metaField.attributedStringValue
+        guard let r = backgroundRange, NSMaxRange(r) <= str.length, !showsCard else { backgroundButton.isHidden = true; return }
+        let f = metaField.frame
+        let textRight = f.maxX - 2
+        let tail = str.attributedSubstring(from: NSRange(location: r.location, length: str.length - r.location)).size().width
+        let w = str.attributedSubstring(from: r).size().width
+        let x = max(f.minX, textRight - tail)
+        backgroundButton.frame = NSRect(x: x - 3 * zoom, y: f.minY - 3 * zoom, width: min(w, textRight - x) + 6 * zoom, height: f.height + 6 * zoom)
+        backgroundButton.isHidden = false
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if !backgroundButton.isHidden {
+            addCursorRect(backgroundButton.convert(backgroundButton.bounds, to: self), cursor: .pointingHand)
+        }
+    }
+
+    @objc private func stopClicked() {
+        canvas?.controller?.stopFollowed(tile.id)
+    }
+
+    @objc private func backgroundClicked() {
+        canvas?.controller?.showBackground(of: tile.id, in: backgroundButton)
     }
 
     @objc private func galleryClicked() {

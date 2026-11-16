@@ -82,6 +82,10 @@ struct Tile: Codable, Identifiable, Equatable {
     var autoSend: Bool?
     /// Dev servers: restart the command when it exits or crashes.
     var keepAlive: Bool?
+    /// Output tiles (kind .logs): the agent's background command whose
+    /// output this tile follows ("bun"). Ends quietly when the command does.
+    var follows: String?
+    var followsPID: Int32?
     /// Agents: work still running after the turn ended (background shell
     /// commands by name, background sub-agents by description).
     var background: [String]?

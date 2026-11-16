@@ -29,6 +29,97 @@ extension CanvasController {
         return id
     }
 
+    // MARK: Background output
+
+    /// What an agent has running in the background, as menu entries: shell
+    /// commands open a tile following their output, sub-agents and waits
+    /// fly to their own tile. A single shell command opens straight away.
+    func showBackground(of tileID: String, in view: NSView) {
+        guard let t = store.findTile(tileID)?.tile else { return }
+        let commands = agentPID[tileID].map { Processes.backgroundCommands(under: $0) } ?? []
+        var others: [Tile] = []
+        if let b = store.findTile(tileID)?.board {
+            let mine = Set(b.links.filter { $0.from == tileID && $0.kind == .spawned }.map(\.to))
+            let kids = Set(backgroundSubagents.values)
+            others = b.tiles.filter { mine.contains($0.id) && $0.state == .working && (kids.contains($0.id) || $0.waitLabel != nil) }
+        }
+        if others.isEmpty, commands.count == 1, commands[0].output != nil {
+            followOutput(commands[0], of: tileID, cwd: t.worktree ?? t.cwd)
+            return
+        }
+        let m = NSMenu()
+        for c in commands {
+            let item = MenuAction(c.output == nil ? "\(c.label) · no output to show" : "Show \(c.label) output") { [weak self] in
+                self?.followOutput(c, of: tileID, cwd: t.worktree ?? t.cwd)
+            }
+            item.isEnabled = c.output != nil
+            m.addItem(item)
+            m.addItem(MenuAction("Stop \(c.label)") { [weak self] in self?.stopBackground(pid: c.pid, label: c.label, of: tileID) })
+        }
+        if !commands.isEmpty, !others.isEmpty { m.addItem(.separator()) }
+        for o in others {
+            m.addItem(MenuAction(o.waitLabel.map { "Waiting on " + $0 } ?? (o.statusMessage ?? o.displayName)) { [weak self] in
+                self?.flyTo(tileID: o.id, fill: false)
+            })
+        }
+        guard !m.items.isEmpty else { return }
+        m.autoenablesItems = false
+        m.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
+    }
+
+    /// Opens (or flies to) a tile tailing a background command's output
+    /// until the command exits.
+    func followOutput(_ c: Processes.Command, of tileID: String, cwd: String?) {
+        guard let path = c.output else { return }
+        // Stop following once the process is gone (tail -F never ends by itself).
+        let script = """
+        tail -n 500 -F \(shellQuote(path)) 2>/dev/null & t=$!
+        while kill -0 \(c.pid) 2>/dev/null; do sleep 1; done
+        sleep 1; kill $t 2>/dev/null; wait $t 2>/dev/null
+        printf '\\n— %s exited —\\n' \(shellQuote(c.label))
+        """
+        if let open = board.tiles.first(where: { $0.follows != nil && $0.watchCommand == script && $0.state == .working }) {
+            flyTo(tileID: open.id, fill: false)
+            return
+        }
+        var t = Tile(kind: .logs, frame: .zero)
+        t.cwd = cwd ?? defaultCwd
+        t.watchCommand = script
+        t.follows = c.label
+        t.followsPID = c.pid
+        t.command = Self.watchScript(script)
+        t.autoName = "\(c.label) output"
+        t.sessionID = t.id
+        t.state = .working
+        t.statusMessage = "Following " + (path as NSString).lastPathComponent
+        let id = addTile(t, at: near(agent: tileID))
+        addLink(from: tileID, to: id, kind: .spawned)
+    }
+
+    /// Stops a command the agent left running: its whole process group
+    /// (the `zsh -c` the agent started it in), TERM first, KILL if it lingers.
+    /// Checks the pid still names the same command, in case it was reused.
+    func stopBackground(pid: pid_t, label: String, of agentID: String?) {
+        guard pid > 1, Processes.name(pid) == label else { return }
+        let g = getpgid(pid)
+        // Never signal our own group or the agent's.
+        let agentGroup = agentID.flatMap { agentPID[$0] }.map { getpgid($0) }
+        let target: pid_t = (g > 1 && g != getpgrp() && g != agentGroup) ? -g : pid
+        kill(target, SIGTERM)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            if kill(pid, 0) == 0, Processes.name(pid) == label { kill(target, SIGKILL) }
+            if let agentID { self?.refreshBackground(agentID) }
+        }
+        if let agentID { refreshBackground(agentID) }
+    }
+
+    /// Stops the command an output tile follows.
+    func stopFollowed(_ id: String) {
+        guard let t = store.findTile(id)?.tile, let name = t.follows, let pid = t.followsPID else { return }
+        let agent = store.findTile(id)?.board.links.first { $0.to == id && $0.kind == .spawned }?.from
+        stopBackground(pid: pid, label: name, of: agent)
+    }
+
     // MARK: Waits
 
     /// What `wait_for` waits on, as a command whose exit code is the result.
@@ -105,6 +196,7 @@ extension CanvasController {
     /// The watched command finished.
     func watchExited(_ id: String, code: Int) {
         guard let t = store.findTile(id)?.tile else { return }
+        if let name = t.follows { setState(id, .done, message: "\(name) exited"); return }
         if t.keepAlive == true { serverExited(id, code: code); return }
         if t.waitLabel != nil { waitFinished(id, t, code: code); return }
         if code == 0 {
@@ -144,7 +236,7 @@ extension CanvasController {
     /// Called from the screen scanner with the tail of a watch tile's output.
     func watchScan(_ id: String, tail: String) {
         // Only while it runs: a finished command's exit code is authoritative.
-        guard let t = store.findTile(id)?.tile, t.kind == .logs, t.waitLabel == nil,
+        guard let t = store.findTile(id)?.tile, t.kind == .logs, t.waitLabel == nil, t.follows == nil,
               t.state == .working || watchFailingLine[id] != nil else { return }
         let lines = tail.split(separator: "\n", omittingEmptySubsequences: true).suffix(30).map(String.init)
         if t.keepAlive == true { detectServerURL(id, tail: tail) }

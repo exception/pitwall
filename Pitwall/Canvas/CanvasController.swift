@@ -672,7 +672,10 @@ final class CanvasController: NSObject {
         if t.isTerminalBacked {
             m.addItem(MenuAction("Restart session") { [weak self] in self?.restartSession(id) })
         }
-        if t.kind == .logs, t.watchCommand != nil {
+        if let name = t.follows, t.state == .working {
+            m.addItem(MenuAction("Stop \(name)") { [weak self] in self?.stopFollowed(id) })
+        }
+        if t.kind == .logs, t.watchCommand != nil, t.follows == nil {
             m.addItem(MenuAction(t.keepAlive == true ? "Restart server" : "Run again") { [weak self] in self?.rerunWatch(id) })
             if t.keepAlive == true {
                 m.addItem(MenuAction("Stop server") { [weak self] in self?.stopServer(id) })
