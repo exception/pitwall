@@ -298,11 +298,15 @@ final class ControlServer {
             case "sidebar": model.sidebarVisible = text != "hide"
             case "appearance": Prefs.shared.appearance = text
             case "devmode": Prefs.shared.devMode = text != "off"
+            case "agent": BoardAgentSettingsWindowController.show(boardID: store.current.id)
             case "fullscreen": ctl.toggleFullScreen(text.isEmpty ? nil : text)
             case "snapshot":
                 // Renders the window in-process (no screen-recording permission
                 // needed). Metal-backed terminals may come out blank.
-                guard !text.isEmpty, let v = ctl.canvas.window?.contentView,
+                // `--key`: the key window instead (e.g. a settings window).
+                let keyWindow = text.hasPrefix("--key ")
+                let text = keyWindow ? String(text.dropFirst(6)) : text
+                guard !text.isEmpty, let v = (keyWindow ? NSApp.keyWindow : ctl.canvas.window)?.contentView,
                       let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return fail("ui snapshot <path.png>") }
                 v.cacheDisplay(in: v.bounds, to: rep)
                 guard let png = rep.representation(using: .png, properties: [:]),
@@ -461,6 +465,38 @@ final class ControlServer {
             guard let raw = req.tileID, let id = ctl.resolveHookTile(raw, args: args) else { return ok() }
             if let out = ctl.handleHook(tileID: id, args: args) { return ok(.object(["hookOutput": .string(out)])) }
             return ok()
+
+        case "agent.ask":
+            // A board by name or id; else the caller's board; else the current one.
+            let wanted = args["board"].flatMap { n in store.boards.first { $0.id == n || $0.name.lowercased() == n.lowercased() } }
+            if args["board"] != nil, wanted == nil { return fail("no board named \(args["board"]!)") }
+            let b = wanted ?? from.flatMap { store.findTile($0)?.board } ?? req.boardID.flatMap { store.board($0) } ?? store.current
+            let ask = AgentAsk(source: args["source"] ?? "cli", from: args["from"] ?? NSUserName(),
+                               channel: args["channel"], text: args["text"] ?? "", link: args["link"])
+            let r = ctl.receiveAsk(ask, boardID: b.id)
+            return r.ok ? ok(.string(r.message)) : fail(r.message)
+
+        case "agent.asks":
+            let b = args["board"].flatMap { n in store.boards.first { $0.id == n || $0.name.lowercased() == n.lowercased() } } ?? store.current
+            return ok(.array((b.asks ?? []).map { a in
+                var o: [String: JSONValue] = ["id": .string(a.id), "from": .string(a.from), "text": .string(a.text),
+                                              "state": .string(a.state.rawValue), "source": .string(a.source)]
+                if let c = a.channel { o["channel"] = .string(c) }
+                if let w = a.workerTileID { o["worker"] = .string(w) }
+                return .object(o)
+            }))
+
+        case "agent.check":
+            let b = args["board"].flatMap { n in store.boards.first { $0.id == n || $0.name.lowercased() == n.lowercased() } } ?? store.current
+            guard b.agentConfig.slack.enabled else { return fail("\(b.agentConfig.name) isn't listening on Slack on \(b.name)") }
+            let since = Double(args["since"] ?? "").map { Date().addingTimeInterval(-$0 * 3600) }
+            return SlackChecker.shared.check(boardID: b.id, since: since)
+                ? ok(.string("Checking Slack for \(b.name)…")) : fail("a check is already running")
+
+        case "agent.pickup":
+            let b = args["board"].flatMap { n in store.boards.first { $0.id == n || $0.name.lowercased() == n.lowercased() } } ?? store.current
+            guard let id = args["ask"], let tile = ctl.pickUp(askID: id, boardID: b.id) else { return fail("no new ask with that id") }
+            return ok(.string(tile))
 
         case "link.list":
             guard let id = req.tileID ?? from else { return fail("run this inside a Pitwall tile") }

@@ -32,6 +32,10 @@ pitwall — control Pitwall from the terminal
   pitwall frame list | collapse <id> | expand <id>
   pitwall tile read <id> [--bytes N]        Print a tile's recent terminal output
   pitwall tile send <id> <text>             Type text into another terminal tile
+  pitwall ask "<text>" [--from NAME] [--channel C] [--board NAME]
+                                            Hand the board's agent something to do (lands in its inbox)
+  pitwall ask list | pickup <id> | check [--since HOURS]  [--board NAME]
+                                            The agent's inbox / start a worker on an ask / check Slack now
   pitwall status <working|waiting|done|error|idle> [message]
                                             Set this tile's agent status
   pitwall notify <message>                  Flag this tile as needing attention
@@ -361,6 +365,29 @@ case "link":
     guard ids.count == 2 else { fputs("link <tile> <tile> [--handoff]\n", stderr); exit(2) }
     do { exit(Control.printResult(try Control.send("link.add", tile: ids[0], args: ["to": ids[1], "handoff": rest.contains("--handoff") ? "1" : "0"]))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
+case "ask":
+    var a: [String: String] = [:]
+    var words: [String] = []
+    var i = 0
+    while i < rest.count {
+        switch rest[i] {
+        case "--from": i += 1; a["from"] = rest[safe: i]
+        case "--channel": i += 1; a["channel"] = rest[safe: i]
+        case "--board": i += 1; a["board"] = rest[safe: i]
+        case "--link": i += 1; a["link"] = rest[safe: i]
+        case "--since": i += 1; a["since"] = rest[safe: i]
+        default: words.append(rest[i])
+        }
+        i += 1
+    }
+    do {
+        if words.first == "list", words.count == 1 { exit(Control.printResult(try Control.send("agent.asks", args: a))) }
+        if words.first == "check", words.count == 1 { exit(Control.printResult(try Control.send("agent.check", args: a))) }
+        if words.first == "pickup", words.count == 2 { a["ask"] = words[1]; exit(Control.printResult(try Control.send("agent.pickup", args: a))) }
+        guard !words.isEmpty else { fputs("ask \"<text>\" [--from NAME] [--channel C] [--board NAME]\n", stderr); exit(2) }
+        a["text"] = words.joined(separator: " ")
+        exit(Control.printResult(try Control.send("agent.ask", args: a)))
+    } catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
 case "status":
     guard let state = rest.first else { fputs("status <state> [message]\n", stderr); exit(2) }
     let msg = rest.dropFirst().joined(separator: " ")
