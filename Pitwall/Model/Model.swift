@@ -105,6 +105,9 @@ struct Tile: Codable, Identifiable, Equatable {
     var rcAdopted: Bool?
     /// The host runs without Pitwall's settings, so its sessions can't report here.
     var rcExternal: Bool?
+    /// Remote Control hosts: sessions whose tile was closed but that are still
+    /// running (the phone can still talk to them). Dropped when they end.
+    var rcClosed: [ClosedRemote]?
 
     var displayName: String {
         if let name, !name.isEmpty { return name }
@@ -129,6 +132,18 @@ struct Tile: Codable, Identifiable, Equatable {
     var hasBackgroundWork: Bool { !(background ?? []).isEmpty && state != .working && state != .waiting }
     /// Working, but only waiting on CI, a deploy or a timer.
     var isWaitingExternally: Bool { state == .working && waitingOn != nil }
+}
+
+/// A Remote Control session whose tile was closed, kept so the host can list
+/// it and open the tile again.
+struct ClosedRemote: Codable, Equatable, Identifiable {
+    var session: String
+    var name: String
+    var cwd: String?
+    var transcript: String?
+    var branch: String?
+    var closedAt: Date = Date()
+    var id: String { session }
 }
 
 /// A connection between two tiles.

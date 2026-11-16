@@ -469,6 +469,14 @@ final class CanvasController: NSObject {
         // A closed Remote session stays closed even as its hooks keep coming.
         if let s = t.rcSession { dismissedRemote.insert(s) }
         store.update(owner.id) { b in
+            // Its host keeps listing it while it runs, to open it again.
+            if t.kind == .remote, let s = t.rcSession,
+               let hostID = b.links.first(where: { $0.to == id && $0.kind == .spawned })?.from,
+               let h = b.tiles.firstIndex(where: { $0.id == hostID }) {
+                var closed = (b.tiles[h].rcClosed ?? []).filter { $0.session != s }
+                closed.append(ClosedRemote(session: s, name: t.displayName, cwd: t.cwd, transcript: t.target, branch: t.branch))
+                b.tiles[h].rcClosed = closed
+            }
             b.tiles.removeAll { $0.id == id }
             // Sub-agents go with their parent.
             let kids = b.links.filter { $0.from == id && $0.kind == .spawned }.map(\.to)

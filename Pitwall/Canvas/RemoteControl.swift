@@ -237,12 +237,46 @@ extension CanvasController {
             refreshTranscript(t.id)
             return t.id
         }
-        // The host starts a session ahead of time; it stays hidden until it's used.
         let event = args["event"] ?? ""
+        // Its tile was closed: keep it listed on the host until it ends.
+        if let host = store.findTile(tileID)?.tile, let c = host.rcClosed?.first(where: { $0.session == sid }) {
+            let path = args["transcript_path"].flatMap { $0.isEmpty ? nil : $0 }
+            if event == "SessionEnd" {
+                updateClosedRemote(host: tileID) { $0.removeAll { $0.session == sid } }
+            } else if let path, path != c.transcript {
+                updateClosedRemote(host: tileID) { l in
+                    if let i = l.firstIndex(where: { $0.session == sid }) { l[i].transcript = path }
+                }
+            }
+            return nil
+        }
+        // The host starts a session ahead of time; it stays hidden until it's used.
         guard ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "Notification"].contains(event),
               !dismissedRemote.contains(sid), let (b, host) = store.findTile(tileID) else { return nil }
         return newRemoteTile(on: b, host: host, session: sid, cwd: args["cwd"], transcript: args["transcript_path"],
                              prompt: event == "UserPromptSubmit" ? args["prompt"].flatMap { $0.isEmpty ? nil : $0 } : nil)
+    }
+
+    private func updateClosedRemote(host: String, _ change: (inout [ClosedRemote]) -> Void) {
+        store.updateTile(host) { t in
+            var l = t.rcClosed ?? []
+            change(&l)
+            t.rcClosed = l.isEmpty ? nil : l
+        }
+    }
+
+    /// Opens the tile of a session closed earlier that is still running.
+    func reopenRemote(host hostID: String, session: String) {
+        guard let (b, host) = store.findTile(hostID), let c = host.rcClosed?.first(where: { $0.session == session }) else { return }
+        updateClosedRemote(host: hostID) { $0.removeAll { $0.session == session } }
+        if let (_, t) = remoteTile(session: session) { focus(tileID: t.id, makeFirstResponder: false); flyTo(tileID: t.id, fill: false); return }
+        // The host is gone or stopped, and its sessions with it.
+        if let p = RemoteHosts.shared.status[hostID]?.phase, p == .stopped || p == .failed { return }
+        dismissedRemote.remove(session)
+        let id = newRemoteTile(on: b, host: host, session: session, cwd: c.cwd, transcript: c.transcript, prompt: nil, name: c.name, announce: false)
+        if let br = c.branch { store.updateTile(id) { $0.branch = br } }
+        focus(tileID: id, makeFirstResponder: false)
+        flyTo(tileID: id, fill: false)
     }
 
     func remoteTile(session: String) -> (Board, Tile)? {
@@ -250,13 +284,14 @@ extension CanvasController {
         return nil
     }
 
-    private func newRemoteTile(on b: Board, host: Tile, session: String, cwd: String?, transcript: String?, prompt: String?) -> String {
+    private func newRemoteTile(on b: Board, host: Tile, session: String, cwd: String?, transcript: String?, prompt: String?,
+                               name: String? = nil, announce: Bool = true) -> String {
         var t = Tile(kind: .remote, frame: .zero)
         t.cwd = cwd ?? host.cwd
         t.target = transcript
         t.rcSession = session
         // Named from the first prompt for now; Claude's own title replaces it.
-        t.autoName = prompt.map { ClaudeIntegration.name(fromTask: $0) } ?? "Remote session"
+        t.autoName = name ?? prompt.map { ClaudeIntegration.name(fromTask: $0) } ?? "Remote session"
         if host.rcSpawn == "worktree", let c = t.cwd { t.branch = Git.branch(c) }
         let size = Self.defaultSize(.remote)
         // Fan out to the right of the host, one column per row of sessions.
@@ -274,7 +309,7 @@ extension CanvasController {
                 bb.links.append(Link(from: host.id, to: t.id, kind: .spawned))
             }
         }
-        model?.toast(.init(kind: .info, title: "New Remote Control session", body: "Started from your phone in \((t.cwd.map { ($0 as NSString).lastPathComponent }) ?? b.name).", tileID: t.id))
+        if announce { model?.toast(.init(kind: .info, title: "New Remote Control session", body: "Started from your phone in \((t.cwd.map { ($0 as NSString).lastPathComponent }) ?? b.name).", tileID: t.id)) }
         refreshTranscript(t.id)
         return t.id
     }
@@ -871,6 +906,8 @@ struct RemoteHostView: View {
     private var tile: Tile? { store.findTile(tileID)?.tile }
     private var status: RemoteHostStatus { hosts.status[tileID] ?? RemoteHostStatus() }
     private var sessions: [Tile] { controller?.remoteSessions(of: tileID) ?? [] }
+    /// Sessions whose tile was closed and that still run, newest first.
+    private var closed: [ClosedRemote] { (tile?.rcClosed ?? []).reversed() }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1064,17 +1101,20 @@ struct RemoteHostView: View {
             HStack {
                 Text("Sessions").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).textCase(.uppercase)
                 Spacer()
-                if !sessions.isEmpty { Text("\(sessions.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary) }
+                if sessions.count + closed.count > 0 { Text("\(sessions.count + closed.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary) }
             }
             .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 4)
-            if sessions.isEmpty {
+            if sessions.isEmpty && closed.isEmpty {
                 Text("Nothing yet. Sessions you start from your phone or claude.ai show up here and on the canvas.")
                     .font(.system(size: 11.5)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16).padding(.vertical, 8)
                 Spacer(minLength: 0)
             } else {
                 ScrollView {
-                    VStack(spacing: 2) { ForEach(sessions) { s in sessionRow(s) } }.padding(.horizontal, 8).padding(.bottom, 8)
+                    VStack(spacing: 2) {
+                        ForEach(sessions) { s in sessionRow(s) }
+                        ForEach(closed) { c in closedRow(c) }
+                    }.padding(.horizontal, 8).padding(.bottom, 8)
                 }
             }
         }
@@ -1096,6 +1136,24 @@ struct RemoteHostView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(HoverRowStyle())
+    }
+
+    private func closedRow(_ c: ClosedRemote) -> some View {
+        Button { controller?.reopenRemote(host: tileID, session: c.session) } label: {
+            HStack(spacing: 9) {
+                Circle().strokeBorder(Color.secondary, lineWidth: 1).frame(width: 7, height: 7)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(c.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                    Text("Tile closed · click to open").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Text(c.closedAt.elapsedShort).font(.system(size: 11).monospacedDigit()).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HoverRowStyle())
+        .help("Still running. Open its tile again.")
     }
 
     private func sessionLine(_ s: Tile) -> String {
@@ -1247,6 +1305,10 @@ extension CanvasController {
             }
             rcRestart[t.id] = r
             return
+        }
+        // Stopped: its sessions ended with it, closed ones included.
+        if t.rcClosed != nil, let p = RemoteHosts.shared.status[t.id]?.phase, p == .stopped || p == .failed {
+            store.updateTile(t.id) { $0.rcClosed = nil }
         }
         // Typed by hand and now stopped: it's their terminal again.
         if t.rcAdopted == true, !isAgent, info.alive {
