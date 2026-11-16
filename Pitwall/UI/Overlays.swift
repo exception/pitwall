@@ -317,6 +317,22 @@ struct DispatchBar: View {
                 .lineLimit(1...6)
                 .focused($focused)
                 .onSubmit { model.dispatch() }
+                // ↩ starts the agent; ⇧↩ / ⌘↩ add a new line at the cursor.
+                .onKeyPress(.return, phases: .down) { press in
+                    guard press.modifiers.contains(.shift) else { return .ignored }
+                    insertNewline()
+                    return .handled
+                }
+                .background {
+                    // ⌘↩ is a key equivalent (View ▸ Center Stage), so it never reaches
+                    // onKeyPress; a shortcut that only exists while typing wins over the menu.
+                    if focused {
+                        Button("", action: insertNewline)
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .opacity(0).frame(width: 0, height: 0)
+                            .accessibilityHidden(true)
+                    }
+                }
                 .padding(.top, 4)
             HStack(spacing: 6) {
                 ChipPicker(symbol: "folder", title: repoLabel, options: repoOptions, selected: model.dispatchRepo ?? model.board.root ?? "") { v in
@@ -354,8 +370,7 @@ struct DispatchBar: View {
                         .background(Circle().fill(Color.primary))
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(.return, modifiers: .command)
-                .help("Start (⌘↩)")
+                .help("Start (↩) · ⌘↩ for a new line")
                 .accessibilityLabel("Start agent")
             }
         }
@@ -409,6 +424,10 @@ struct DispatchBar: View {
         out.append(.init(value: AgentKind.shell.rawValue, symbol: "terminal", title: "Shell command",
                          subtitle: "Run any command in a new terminal"))
         return out
+    }
+
+    private func insertNewline() {
+        NSApp.sendAction(#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
     }
 
     private var placeholder: String {

@@ -129,8 +129,9 @@ extension CanvasController {
     func newRunWait(runID: String, repo: String?, note: String?, cwd: String?, from: String?) -> String {
         var t = Tile(kind: .run, frame: .zero)
         t.target = runID
-        t.runRepo = repo
         t.cwd = cwd ?? defaultCwd
+        // Pin the repo now: the folder may not be a checkout (or may be gone) later.
+        t.runRepo = repo ?? t.cwd.flatMap(Git.githubRepo)
         t.waitLabel = "CI run \(runID)"
         t.waitNote = note.flatMap { $0.isEmpty ? nil : $0 }
         t.autoName = "CI run \(runID)"
@@ -163,14 +164,22 @@ extension CanvasController {
         guard let t = store.findTile(id)?.tile, let runID = t.target, !runLoading.contains(id) else { return }
         runLoading.insert(id)
         runPolledAt[id] = Date()
-        let args = ["run", "view", runID] + (t.runRepo.map { ["-R", $0] } ?? []) + ["--json", RunInfo.fields]
         let dir = t.cwd ?? NSHomeDirectory()
+        let known = t.runRepo
         DispatchQueue.global(qos: .utility).async {
+            let repo = known ?? Git.githubRepo(dir)
             var err = ""
-            let info = GH.run(args, in: dir, error: &err).flatMap { RunInfo.parse(Data($0.utf8)) }
+            var info: RunInfo?
+            if repo == nil && Git.toplevel(dir) == nil {
+                err = "Don't know which repo run \(runID) is in: \((dir as NSString).abbreviatingWithTildeInPath) isn't a git checkout. Wait on the run's URL instead."
+            } else {
+                let args = ["run", "view", runID] + (repo.map { ["-R", $0] } ?? []) + ["--json", RunInfo.fields]
+                info = GH.run(args, in: dir, error: &err).flatMap { RunInfo.parse(Data($0.utf8)) }
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.runLoading.remove(id)
+                if known == nil, let repo { self.store.updateTile(id) { $0.runRepo = repo } }
                 let s = RunStore.shared
                 s.updated[id] = Date()
                 guard let info else { s.errors[id] = err.isEmpty ? "Couldn't load the run." : err; return }

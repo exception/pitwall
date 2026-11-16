@@ -27,6 +27,17 @@ enum Git {
         run(["rev-parse", "--show-toplevel"], in: dir)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// "owner/repo" of the GitHub `origin` remote, so gh can be pointed at the
+    /// repo (-R) without needing to run inside a checkout.
+    static func githubRepo(_ dir: String) -> String? {
+        guard let url = run(["remote", "get-url", "origin"], in: dir)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let r = url.range(of: #"github\.com[:/]([^/\s]+/[^/\s]+?)(\.git)?/?$"#, options: .regularExpression) else { return nil }
+        var s = String(url[r]).dropFirst("github.com".count + 1)
+        if s.hasSuffix("/") { s = s.dropLast() }
+        if s.hasSuffix(".git") { s = s.dropLast(4) }
+        return String(s)
+    }
+
     /// The top of the linked worktree `dir` is in, or nil when `dir` is in a
     /// main checkout (or not in a repo at all).
     static func linkedWorktree(_ dir: String) -> String? {

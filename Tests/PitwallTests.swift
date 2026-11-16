@@ -144,6 +144,25 @@ final class PitwallTests: XCTestCase {
         XCTAssertEqual(CanvasController.waitSpec(run: nil, pr: nil, command: "kubectl rollout status deploy/api")?.command,
                        "kubectl rollout status deploy/api")
         XCTAssertNil(CanvasController.waitSpec(run: "", pr: " ", command: nil))
+        // Outside a checkout gh can't guess the repo, so a PR number carries -R.
+        XCTAssertEqual(CanvasController.waitSpec(run: nil, pr: "42", command: nil, repo: "acme/web")?.command,
+                       "gh pr checks 42 -R acme/web --watch --interval 30")
+        XCTAssertFalse(CanvasController.waitSpec(run: nil, pr: "https://github.com/acme/web/pull/42", command: nil, repo: "x/y")?
+            .command.contains("-R") ?? true)
+    }
+
+    func testGitHubRepoFromRemote() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        XCTAssertNil(Git.githubRepo(dir))
+        Git.run(["init", "-q"], in: dir)
+        for (url, want) in [("git@github.com:acme/web.git", "acme/web"), ("https://github.com/acme/web", "acme/web"),
+                            ("https://github.com/acme/web.git/", "acme/web"), ("https://gitlab.com/acme/web.git", nil)] {
+            Git.run(["remote", "remove", "origin"], in: dir)
+            Git.run(["remote", "add", "origin", url], in: dir)
+            XCTAssertEqual(Git.githubRepo(dir), want, url)
+        }
     }
 
     func testBlockingWaitDetection() {

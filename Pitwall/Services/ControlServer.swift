@@ -222,11 +222,12 @@ final class ControlServer {
             return ok(.string(id))
 
         case "tile.wait":
-            guard let spec = CanvasController.waitSpec(run: args["run"], pr: args["pr"], command: args["command"]) else {
+            let cwd = args["cwd"] ?? from.flatMap { store.findTile($0)?.tile.cwd }
+            let repo = (args["pr"]?.isEmpty == false) ? cwd.flatMap(Git.githubRepo) : nil
+            guard let spec = CanvasController.waitSpec(run: args["run"], pr: args["pr"], command: args["command"], repo: repo) else {
                 return fail("give one of: run (a GitHub Actions run id or URL), pr (number or URL), or command")
             }
             ensureBoard(of: from)
-            let cwd = args["cwd"] ?? from.flatMap { store.findTile($0)?.tile.cwd }
             let id = spec.runID.map { ctl.newRunWait(runID: $0, repo: spec.runRepo, note: args["then"], cwd: cwd, from: from) }
                 ?? ctl.newWait(spec, note: args["then"], cwd: cwd, from: from)
             let wake = from == nil ? "" : " When it finishes (success or failure) Pitwall will send you the result as a new message."

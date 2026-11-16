@@ -133,7 +133,8 @@ extension CanvasController {
     }
 
     /// A GitHub Actions run (id or URL), a PR's checks, or any command.
-    static func waitSpec(run: String?, pr: String?, command: String?) -> WaitSpec? {
+    /// `repo` ("owner/repo") points gh at it when the wait won't run inside a checkout.
+    static func waitSpec(run: String?, pr: String?, command: String?, repo: String? = nil) -> WaitSpec? {
         if let run = run?.trimmingCharacters(in: .whitespaces), !run.isEmpty {
             var repo: String?
             var id = run
@@ -148,7 +149,8 @@ extension CanvasController {
         }
         if let pr = pr?.trimmingCharacters(in: .whitespaces), !pr.isEmpty {
             let num = pr.split(separator: "/").last.map(String.init) ?? pr
-            return WaitSpec(command: "gh pr checks \(shellQuote(pr)) --watch --interval 30", label: "PR #\(num.trimmingCharacters(in: CharacterSet(charactersIn: "#"))) checks")
+            let r = pr.contains("github.com/") ? "" : repo.map { " -R " + shellQuote($0) } ?? ""
+            return WaitSpec(command: "gh pr checks \(shellQuote(pr))\(r) --watch --interval 30", label: "PR #\(num.trimmingCharacters(in: CharacterSet(charactersIn: "#"))) checks")
         }
         if let c = command?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty {
             let one = c.replacingOccurrences(of: "\n", with: " ")
