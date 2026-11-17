@@ -60,6 +60,7 @@ struct SidebarView: View {
                 }
             }
             Spacer(minLength: 0)
+            BoardAgentCard(model: model)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 12)

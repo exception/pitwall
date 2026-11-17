@@ -44,6 +44,8 @@ Pitwall puts every agent on an infinite canvas as a real terminal tile, reads th
 - **Dev servers** restart when they crash, and the first local URL they print opens in a browser tile next to them.
 - Notes, code, images and browser tiles for everything else.
 
+**A board agent that watches Slack.** Each board has its own agent at the bottom of the sidebar, with a name and picture you choose. Point it at a Slack workspace (through Claude's Slack connector, or a sign-in of the board's own so each board can be on a different workspace) and the channels, DMs and mentions it should watch. Every few minutes a read-only check files what people ask you for into its inbox, grouped by topic and kept in their own words. Pick one up and an agent starts on it in its own worktree. It never acts without asking you, and its agents use your installed skills first.
+
 **Organize the wall.** Boards per project, frames to group tiles (new tiles land inside them, collapse a frame to a strip that still shows who needs you), saved layouts (`⌃1`–`⌃9`), and search across the full history of every terminal on every board (`⌘F`, text or `/regex/`).
 
 <p align="center"><img alt="Searching every terminal's history" src="docs/images/search.png" width="85%"></p>
@@ -87,6 +89,7 @@ pitwall server -- npm run dev                           # restarts on crash, ope
 pitwall rc --worktree                                   # Remote Control: phone sessions open as tiles
 pitwall pr                                              # follow this branch's pull request
 pitwall search "/ECONNREFUSED|timeout/"                 # search every terminal's history
+pitwall ask "Bump the Stripe SDK" --from alice          # hand the board's agent an ask (lands in its inbox)
 pitwall link <tile> <tile> --handoff                    # pipeline two agents
 pitwall layout save "Review"                            # and: pitwall layout Review
 pitwall help                                            # everything else

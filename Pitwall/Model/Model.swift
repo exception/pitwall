@@ -196,6 +196,15 @@ struct Board: Codable, Identifiable, Equatable {
     var viewport = Viewport()
     /// Named arrangements of this board's tiles.
     var layouts: [SavedLayout]?
+    /// The board's own agent (sidebar): identity, where it listens, what it may do.
+    var agent: BoardAgentConfig?
+    /// What people asked the board's agent for.
+    var asks: [AgentAsk]?
+    /// The last Slack check that finished, and its error if it failed.
+    var agentChecked: Date?
+    var agentCheckError: String?
+    /// Slack messages already filed (permalink or channel+ts), newest last.
+    var agentSeen: [String]?
 
     func tile(_ id: String) -> Tile? { tiles.first { $0.id == id } }
     func members(of frameID: String) -> [Tile] { tiles.filter { $0.frameGroupID == frameID } }

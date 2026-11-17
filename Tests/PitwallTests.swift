@@ -292,4 +292,110 @@ final class PitwallTests: XCTestCase {
         XCTAssertEqual(b, [.para("Done."), .bullet("**Bug:** fixed", 0), .bullet("nested", 1), .numbered("1.", "first"),
                            .heading("Notes"), .code("npm test"), .para("tail")])
     }
+
+    // MARK: Board agent
+
+    func testBoardAgentDropsAsksFromOutsideItsLists() {
+        var cfg = BoardAgentConfig()
+        let ask = AgentAsk(source: "slack", from: "@Alice", channel: "#Bugs", text: "fix login")
+        XCTAssertNotNil(BoardAgent.rejection(ask, config: cfg), "slack asks need a watched channel")
+        cfg.slack.channels = ["bugs"]
+        XCTAssertNil(BoardAgent.rejection(ask, config: cfg))
+        cfg.slack.allowedUsers = ["bob"]
+        XCTAssertNotNil(BoardAgent.rejection(ask, config: cfg))
+        cfg.slack.allowedUsers = ["alice", "bob"]
+        XCTAssertNil(BoardAgent.rejection(ask, config: cfg))
+        XCTAssertNotNil(BoardAgent.rejection(AgentAsk(source: "cli", from: "alice", text: "  "), config: cfg))
+        // CLI asks ignore the channel list (it's for Slack) but not the allowlist.
+        XCTAssertNil(BoardAgent.rejection(AgentAsk(source: "cli", from: "bob", channel: "random", text: "x"), config: cfg))
+        XCTAssertNotNil(BoardAgent.rejection(AgentAsk(source: "cli", from: "eve", text: "x"), config: cfg))
+    }
+
+    func testBoardAgentTaskFramesTheAskAsSomeoneElses() {
+        var cfg = BoardAgentConfig()
+        cfg.instructions = "Never touch billing."
+        let t = BoardAgent.task(for: AgentAsk(source: "slack", from: "alice", channel: "#bugs", text: "login 500s"), config: cfg)
+        XCTAssertTrue(t.hasPrefix("login 500s\n\n(Asked by alice in #bugs.)"))
+        XCTAssertTrue(t.contains("Never touch billing."))
+        XCTAssertTrue(t.contains("not from the user"))
+    }
+
+    func testBoardAgentStateAndTrim() {
+        var w = Tile(kind: .agent, frame: .zero)
+        w.state = .working
+        var a = AgentAsk(source: "cli", from: "a", text: "x")
+        XCTAssertEqual(BoardAgent.state(asks: [a], tiles: []), .waiting)
+        a.state = .pickedUp
+        a.workerTileID = w.id
+        XCTAssertEqual(BoardAgent.state(asks: [a], tiles: [w]), .working)
+        XCTAssertEqual(BoardAgent.state(asks: [], tiles: [w]), .idle)
+        let many = (0..<50).map { i -> AgentAsk in
+            var q = AgentAsk(source: "cli", from: "a", text: "\(i)"); q.state = .ignored; q.at = Date(timeIntervalSince1970: Double(i)); return q
+        } + [AgentAsk(source: "cli", from: "a", text: "new")]
+        let kept = BoardAgent.trimmed(many)
+        XCTAssertEqual(kept.count, BoardAgent.keepHandled + 1)
+        XCTAssertTrue(kept.contains { $0.text == "new" })
+        XCTAssertFalse(kept.contains { $0.text == "0" })
+        XCTAssertEqual(BoardAgent.list("#a, b  c\n"), ["#a", "b", "c"])
+    }
+
+    func testOldBoardsDecodeWithoutAnAgent() throws {
+        let json = #"{"id":"b-1","name":"x","colorIndex":0,"tiles":[],"links":[],"frames":[],"viewport":{"origin":[0,0],"zoom":1}}"#
+        let b = try Wire.decoder.decode(Board.self, from: Data(json.utf8))
+        XCTAssertNil(b.agent)
+        XCTAssertEqual(b.agentConfig.name, "Pit")
+        var c = b
+        c.agent = BoardAgentConfig(name: "Scout")
+        c.asks = [AgentAsk(source: "cli", from: "a", text: "x")]
+        let back = try Wire.decoder.decode(Board.self, from: Wire.encoder.encode(c))
+        XCTAssertEqual(back.agent?.name, "Scout")
+        XCTAssertEqual(back.asks?.count, 1)
+    }
+
+    func testSlackCheckParsesStructuredOutput() throws {
+        let out = """
+        Last login: Mon
+        {"type":"result","is_error":false,"result":"","structured_output":{"workspace":"Motordil","asks":[{"from":"Ana","channel":"dm","via":"dm","title":"flujo de tarjeta","text":"can you look at the card flow?\\nalso the retry","link":"https://x.slack.com/archives/D1/p1","ts":["1.2","1.3"]},{"from":"Bo","channel":"bugs","via":"channel","title":"500s","text":"500s","ts":["3.4"],"link":"javascript:alert(1)","continues":"q-abc"}]}}
+        """
+        let r = try BoardAgent.parseCheck(Data(out.utf8))
+        XCTAssertEqual(r.workspace, "Motordil")
+        XCTAssertEqual(r.asks.map(\.from), ["Ana", "Bo"])
+        XCTAssertNil(r.asks[0].channel, "DMs have no channel")
+        XCTAssertNil(r.asks[1].link, "only https links are kept")
+        XCTAssertEqual(r.keys, [["Ana:1.2", "Ana:1.3"], ["Bo:3.4"]])
+        XCTAssertEqual(r.asks[0].count, 2)
+        XCTAssertEqual(r.asks[0].title, "flujo de tarjeta")
+        XCTAssertEqual(r.continues, [nil, "q-abc"])
+        XCTAssertThrowsError(try BoardAgent.parseCheck(Data(#"{"type":"result","is_error":true,"result":"Not logged in"}"#.utf8)))
+        XCTAssertThrowsError(try BoardAgent.parseCheck(Data("zsh: command not found: claude".utf8)))
+    }
+
+    func testSlackAsksMustArriveAWayTheBoardListens() {
+        var cfg = BoardAgentConfig()
+        cfg.slack.directMessages = false
+        XCTAssertNotNil(BoardAgent.rejection(AgentAsk(source: "slack", from: "a", via: "dm", text: "x"), config: cfg))
+        XCTAssertNil(BoardAgent.rejection(AgentAsk(source: "slack", from: "a", channel: "random", via: "mention", text: "x"), config: cfg))
+        XCTAssertNotNil(BoardAgent.rejection(AgentAsk(source: "slack", from: "a", channel: "random", via: "channel", text: "x"), config: cfg))
+        let p = BoardAgent.checkPrompt(cfg.slack, since: Date(timeIntervalSince1970: 1_800_000_000))
+        XCTAssertFalse(p.contains("Direct messages"))
+        XCTAssertTrue(p.contains("Unix 1800000000"))
+        XCTAssertTrue(BoardAgent.checkTools(.boardSignIn).filter { $0 != "Skill" }.allSatisfy { $0.hasPrefix("mcp__slack__slack_read") || $0.hasPrefix("mcp__slack__slack_search") })
+        XCTAssertFalse(BoardAgent.checkTools(.claudeConnector).contains { $0.contains("send") || $0.contains("reaction") })
+    }
+
+    func testBoardAgentNeverActsWithoutAsking() throws {
+        XCTAssertEqual(PermissionLevel.allCases, [.off, .ask])
+        let old = #"{"pickUpTasks":"auto","replyAsMe":"auto","reactAsMe":"off","setMyStatus":"ask"}"#
+        let p = try Wire.decoder.decode(AgentPermissions.self, from: Data(old.utf8))
+        XCTAssertEqual(p.pickUpTasks, .ask)
+        XCTAssertEqual(p.replyAsMe, .ask)
+        XCTAssertEqual(p.reactAsMe, .off)
+        XCTAssertTrue(BoardAgent.checkTools(.claudeConnector).contains("Skill"))
+        let t = BoardAgent.task(for: AgentAsk(source: "slack", from: "a", title: "Tarjeta", text: "x\ny", count: 2), config: BoardAgentConfig())
+        XCTAssertTrue(t.hasPrefix("Tarjeta\n\nx\ny\n\n(Asked by a, 2 messages.)"))
+        XCTAssertTrue(t.contains("skills"))
+        let open = [AgentAsk(id: "q-1", source: "slack", from: "Ana", title: "flujo de tarjeta", text: "...")]
+        XCTAssertTrue(BoardAgent.checkPrompt(SlackWatch(), since: Date(), open: open).contains("q-1: Ana: flujo de tarjeta"))
+    }
 }
+

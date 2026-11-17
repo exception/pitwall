@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         main = MainWindowController()
         control.controller = main.controller
+        SlackChecker.shared.start(controller: main.controller)
         control.start()
         NSApp.mainMenu = buildMenu()
         _ = Updater.shared  // starts scheduled update checks (release builds)
