@@ -127,6 +127,20 @@ final class RunStore: ObservableObject {
 extension CanvasController {
     /// A wait on a GitHub Actions run, shown as a live Run tile.
     func newRunWait(runID: String, repo: String?, note: String?, cwd: String?, from: String?) -> String {
+        // The same run again (a rerun after a failure): re-arm its tile.
+        if let from, let old = existingWait(from: from, where: { $0.kind == .run && $0.target == runID }) {
+            if old.state != .working, let info = RunStore.shared.infos[old.id], info.completed {
+                runRearmed[old.id] = (info.attempt, Date())
+            }
+            store.updateTile(old.id) {
+                $0.waitNote = note.flatMap { $0.isEmpty ? nil : $0 }
+                if repo != nil { $0.runRepo = repo }
+            }
+            setState(old.id, .working, message: "Waiting on CI run \(runID)")
+            refreshBackground(from)
+            pollRun(old.id)
+            return old.id
+        }
         var t = Tile(kind: .run, frame: .zero)
         t.target = runID
         t.cwd = cwd ?? defaultCwd
@@ -198,6 +212,12 @@ extension CanvasController {
             reconcile()
         }
         guard t.state == .working else { return }
+        if let r = runRearmed[id] {
+            // Still the attempt that already finished: the rerun hasn't
+            // shown up yet. Give GitHub a couple of minutes before taking it.
+            if info.completed && info.attempt == r.attempt && Date().timeIntervalSince(r.at) < 120 { return }
+            runRearmed[id] = nil
+        }
         if info.completed {
             runFinished(id, info)
         } else {

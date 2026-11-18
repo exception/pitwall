@@ -1559,6 +1559,9 @@ final class CanvasController: NSObject {
     /// Run tiles: last poll, and polls in flight.
     var runPolledAt: [String: Date] = [:]
     var runLoading = Set<String>()
+    /// Run waits re-armed after a finished attempt: that attempt, and when.
+    /// Until GitHub reports the rerun, its stale result isn't the answer.
+    var runRearmed: [String: (attempt: Int, at: Date)] = [:]
     /// Remote Control sessions whose tile was closed.
     var dismissedRemote = Set<String>()
     /// Foreground pids already checked for `claude rc`, per tile.

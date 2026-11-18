@@ -162,6 +162,20 @@ extension CanvasController {
     /// Starts a wait for an agent: a watch tile linked to it that wakes the
     /// agent with the result when it finishes, pass or fail.
     func newWait(_ spec: WaitSpec, note: String?, cwd: String?, from: String?) -> String {
+        // Waiting again on the same thing (CI retried after a failure):
+        // re-arm the tile it already has instead of opening another one.
+        if let from, let old = existingWait(from: from, where: {
+            // PR waits by PR number, so "578" and its URL are the same wait.
+            $0.kind == .logs && ($0.watchCommand == spec.command
+                || (spec.command.hasPrefix("gh pr checks ") && $0.waitLabel == spec.label))
+        }) {
+            store.updateTile(old.id) { $0.waitNote = note.flatMap { $0.isEmpty ? nil : $0 } }
+            if old.state != .working { rerunWatch(old.id) }
+            store.updateTile(old.id) { $0.statusMessage = "Waiting on " + spec.label }
+            refreshBackground(from)
+            reconcile()
+            return old.id
+        }
         let id = newWatch(command: spec.command, cwd: cwd, at: from.flatMap { near(agent: $0) }, from: from)
         store.updateTile(id) {
             $0.waitLabel = spec.label
@@ -172,6 +186,13 @@ extension CanvasController {
         if let from { refreshBackground(from) }
         reconcile()
         return id
+    }
+
+    /// A wait tile this agent started earlier that matches.
+    func existingWait(from agent: String, where match: (Tile) -> Bool) -> Tile? {
+        linkedTiles(of: agent).first { l, t in
+            l.from == agent && l.kind == .spawned && t.waitLabel != nil && match(t)
+        }?.1
     }
 
     private func near(agent id: String) -> CGPoint? {
