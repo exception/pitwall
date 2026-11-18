@@ -292,4 +292,57 @@ final class PitwallTests: XCTestCase {
         XCTAssertEqual(b, [.para("Done."), .bullet("**Bug:** fixed", 0), .bullet("nested", 1), .numbered("1.", "first"),
                            .heading("Notes"), .code("npm test"), .para("tail")])
     }
+
+    func testSlashFrontmatterFoldedAndQuoted() {
+        let md = "---\nname: pr-review\ndescription: >\n  Review a PR\n  strictly.\nargument-hint: \"[id]\"\nuser-invocable: false\n---\nBody"
+        let m = SlashCommands.frontmatter(md)
+        XCTAssertEqual(m["name"], "pr-review")
+        XCTAssertEqual(m["description"], "Review a PR strictly.")
+        XCTAssertEqual(m["argument-hint"], "[id]")
+        XCTAssertEqual(m["user-invocable"], "false")
+        XCTAssertTrue(SlashCommands.frontmatter("no frontmatter").isEmpty)
+    }
+
+    func testSlashCommandsLoadProjectUserAndPlugins() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("slash-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: home) }
+        func write(_ path: String, _ text: String) throws {
+            let url = home.appendingPathComponent(path)
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        try write(".claude/skills/spec/SKILL.md", "---\nname: spec\ndescription: User spec\n---\n")
+        try write(".claude/skills/hidden/SKILL.md", "---\nuser-invocable: false\n---\n")
+        try write(".claude/commands/standup.md", "Write my standup\n")
+        try write("code/app/.claude/skills/spec/SKILL.md", "---\ndescription: Project spec\n---\n")
+        try write("code/app/.claude/commands/deploy.md", "---\ndescription: Ship it\n---\n")
+        let plugin = home.appendingPathComponent("plugins/notion")
+        try write("plugins/notion/.claude-plugin/plugin.json", #"{"name": "Notion"}"#)
+        try write("plugins/notion/commands/find.md", "---\ndescription: Find pages\nargument-hint: query\n---\n")
+        try write("plugins/notion/commands/tasks/build.md", "---\ndescription: Build\n---\n")
+        try write("plugins/off/skills/x/SKILL.md", "---\ndescription: Disabled\n---\n")
+        try write(".claude/plugins/installed_plugins.json", """
+            {"version": 2, "plugins": {"notion@m": [{"installPath": "\(plugin.path)"}],
+             "off@m": [{"installPath": "\(home.appendingPathComponent("plugins/off").path)"}]}}
+            """)
+        try write(".claude/settings.json", #"{"enabledPlugins": {"notion@m": true, "off@m": true}}"#)
+        try write("code/app/.claude/settings.json", #"{"enabledPlugins": {"off@m": false}}"#)
+
+        let all = SlashCommands.load(repo: home.appendingPathComponent("code/app").path, home: home)
+        let byName = Dictionary(uniqueKeysWithValues: all.map { ($0.name, $0) })
+        XCTAssertEqual(byName["spec"]?.description, "Project spec") // project shadows user
+        XCTAssertEqual(byName["spec"]?.source, .project)
+        XCTAssertEqual(byName["deploy"]?.source, .project)
+        XCTAssertEqual(byName["standup"]?.description, "Write my standup")
+        XCTAssertNil(byName["hidden"])
+        XCTAssertEqual(byName["Notion:find"]?.argumentHint, "query")
+        XCTAssertEqual(byName["Notion:tasks:build"]?.source, .plugin("Notion"))
+        XCTAssertNil(byName["off:x"])
+        XCTAssertNotNil(byName["init"])
+
+        XCTAssertEqual(SlashCommands.matches("fi", in: all).first?.name, "Notion:find")
+        XCTAssertEqual(SlashCommands.matches("dep", in: all).first?.name, "deploy")
+        XCTAssertEqual(SlashCommands.matches("", in: all).first?.source, .project)
+    }
 }

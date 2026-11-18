@@ -298,9 +298,16 @@ struct DispatchBar: View {
     @ObservedObject private var agents = AgentAvailability.shared
     @FocusState private var focused: Bool
     @State private var highlight = false
+    @StateObject private var catalog = SlashCatalog()
+    @State private var slashIndex = 0
+    /// Esc closes the `/` menu until the text stops starting with `/`.
+    @State private var slashDismissed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if showSlash {
+                SlashMenu(commands: slashMatches, selected: min(slashIndex, slashMatches.count - 1), onPick: complete)
+            }
             if !draft.images.isEmpty && model.dispatchAgent != .shell {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -319,9 +326,38 @@ struct DispatchBar: View {
                 .onSubmit { model.dispatch() }
                 // ↩ starts the agent; ⇧↩ / ⌘↩ add a new line at the cursor.
                 .onKeyPress(.return, phases: .down) { press in
-                    guard press.modifiers.contains(.shift) else { return .ignored }
-                    insertNewline()
+                    if press.modifiers.contains(.shift) { insertNewline(); return .handled }
+                    // With the `/` menu open, ↩ completes the highlighted command;
+                    // once it's typed out in full, ↩ starts the agent as usual.
+                    guard showSlash, let c = selectedSlash,
+                          c.name.lowercased() != slashQuery?.lowercased() else { return .ignored }
+                    complete(c)
                     return .handled
+                }
+                .onKeyPress(.tab) {
+                    guard showSlash, let c = selectedSlash else { return .ignored }
+                    complete(c)
+                    return .handled
+                }
+                .onKeyPress(.downArrow) {
+                    guard showSlash else { return .ignored }
+                    slashIndex = (min(slashIndex, slashMatches.count - 1) + 1) % slashMatches.count
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    guard showSlash else { return .ignored }
+                    slashIndex = (min(slashIndex, slashMatches.count - 1) - 1 + slashMatches.count) % slashMatches.count
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    guard showSlash else { return .ignored }
+                    slashDismissed = true
+                    return .handled
+                }
+                .onChange(of: draft.text) { text in
+                    slashIndex = 0
+                    if !text.hasPrefix("/") { slashDismissed = false }
+                    if text == "/" { catalog.refresh(repo: model.dispatchRepo ?? model.board.root) }
                 }
                 .background {
                     // ⌘↩ is a key equivalent (View ▸ Center Stage), so it never reaches
@@ -432,7 +468,35 @@ struct DispatchBar: View {
 
     private var placeholder: String {
         if model.dispatchAgent == .shell { return "Command to run…" }
-        return draft.images.isEmpty ? "What should a new agent work on? (⌘V to attach an image)" : "What should the agent do with this?"
+        if !draft.images.isEmpty { return "What should the agent do with this?" }
+        return model.dispatchAgent == .claude
+            ? "What should a new agent work on? (/ for skills, ⌘V to attach an image)"
+            : "What should a new agent work on? (⌘V to attach an image)"
+    }
+
+    // MARK: `/` menu
+
+    /// What's typed after a leading `/`, while the command name is still being typed.
+    private var slashQuery: String? {
+        let t = draft.text
+        guard model.dispatchAgent == .claude, t.hasPrefix("/"), !t.contains(where: \.isWhitespace) else { return nil }
+        return String(t.dropFirst())
+    }
+
+    private var slashMatches: [SlashCommand] {
+        slashQuery.map { SlashCommands.matches($0, in: catalog.commands) } ?? []
+    }
+
+    private var showSlash: Bool { focused && !slashDismissed && !slashMatches.isEmpty }
+
+    private var selectedSlash: SlashCommand? {
+        let m = slashMatches
+        return m.isEmpty ? nil : m[min(slashIndex, m.count - 1)]
+    }
+
+    private func complete(_ c: SlashCommand) {
+        draft.text = "/" + c.name + " "
+        focused = true
     }
 
     private var repoOptions: [ChipPicker.Option] {
@@ -451,6 +515,68 @@ struct DispatchBar: View {
     private var repoLabel: String {
         let p = model.dispatchRepo ?? model.board.root ?? NSHomeDirectory()
         return (p as NSString).lastPathComponent
+    }
+}
+
+/// Skills and commands matching the `/` typed into the dispatch bar.
+struct SlashMenu: View {
+    let commands: [SlashCommand]
+    let selected: Int
+    let onPick: (SlashCommand) -> Void
+    @State private var hovered: String?
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(commands.enumerated()), id: \.element.id) { i, c in
+                        row(c, active: i == selected).id(c.id)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(height: min(CGFloat(commands.count), 6) * 44 + 4)
+            .onChange(of: selected) { i in
+                guard commands.indices.contains(i) else { return }
+                proxy.scrollTo(commands[i].id)
+            }
+        }
+        .padding(.top, 4)
+        .padding(.trailing, 8)
+        .overlay(alignment: .bottom) { Divider().offset(y: 5) }
+    }
+
+    private func row(_ c: SlashCommand, active: Bool) -> some View {
+        Button { onPick(c) } label: {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("/" + c.name).font(.system(size: 13, weight: .medium, design: .monospaced)).lineLimit(1)
+                        if let hint = c.argumentHint, !hint.isEmpty {
+                            Text(hint).font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+                        }
+                    }
+                    if !c.description.isEmpty {
+                        Text(c.description).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                Text(c.source.label)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7).frame(height: 18)
+                    .background(Capsule().fill(Color.primary.opacity(0.07)))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 42)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(active ? 0.1 : (hovered == c.id ? 0.06 : 0))))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 ? c.id : (hovered == c.id ? nil : hovered) }
+        .help(c.description)
     }
 }
 
