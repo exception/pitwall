@@ -16,13 +16,13 @@ struct SidebarView: View {
             .frame(height: 18) // traffic lights live on the left
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(model.store.boards) { b in
-                    BoardRow(board: b, selected: b.id == model.store.currentBoardID, activity: model.activity(on: b)) {
+                    BoardRow(board: b, selected: b.id == model.store.currentBoardID, activity: model.activity(on: b), portalTo: model.portalPeers(of: b)) {
                         model.controller?.switchBoard(b.id)
                     }
                     .contextMenu {
                         Button("Rename…") { renameBoard(b) }
                         if model.store.boards.count > 1 {
-                            Button("Remove board") { model.store.removeBoard(b.id); model.controller?.reconcile() }
+                            Button("Remove board") { model.controller?.removeBoard(b.id) }
                         }
                     }
                 }
@@ -86,6 +86,7 @@ struct BoardRow: View {
     let board: Board
     let selected: Bool
     let activity: BoardActivity
+    var portalTo: [Board] = []
     let action: () -> Void
 
     var body: some View {
@@ -99,6 +100,13 @@ struct BoardRow: View {
                     .fontWeight(selected ? .semibold : .regular)
                     .lineLimit(1)
                 Spacer(minLength: 4)
+                if let peer = portalTo.first {
+                    Image(systemName: "hurricane")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color(ns: Theme.boardColors[peer.colorIndex % Theme.boardColors.count]))
+                        .help("Portals to " + portalTo.map(\.name).joined(separator: ", "))
+                        .accessibilityLabel("Portals to " + portalTo.map(\.name).joined(separator: ", "))
+                }
                 indicators
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
@@ -740,7 +748,11 @@ struct ToastView: View {
                         ToastButton(title: "Approve", primary: true, accent: true) { model.answer(toast, allow: true) }
                         ToastButton(title: "Deny", primary: false) { model.answer(toast, allow: false) }
                     }
-                    ToastButton(title: "Go to", primary: !isPermission, accent: !isPermission && toast.kind == .attention) { model.goTo(toast) }
+                    if toast.portalID != nil {
+                        ToastButton(title: "Jump", primary: true, accent: true) { model.jump(toast) }
+                    } else {
+                        ToastButton(title: "Go to", primary: !isPermission, accent: !isPermission && toast.kind == .attention) { model.goTo(toast) }
+                    }
                 }
             }
         }

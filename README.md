@@ -35,6 +35,8 @@ Pitwall puts every agent on an infinite canvas as a real terminal tile, reads th
 
 **Agents that work together.** Draw a link between two tiles and the agents can message each other through Pitwall's MCP server. Turn a link into a hand-off and one agent's result becomes the next one's task. Link a note to an agent and it becomes shared context on every prompt. "Review with a new agent" starts a reviewer on the same checkout.
 
+**Portals between repos.** When one project spans two boards (say `api` and `web`), right-click an agent → **Open portal to ▸** the other board to start an agent there, in its own worktree of that repo, or to connect to an agent already on it. Agents can do it themselves with `open_portal`. The two agents message each other through the portal, a vortex on each tile shows where it leads, and clicking its badge jumps you through. Opening one never moves your view.
+
 **Start sessions from your phone.** Start Remote Control on a board (File > Start Remote Control…, or `pitwall rc`) and Pitwall runs `claude remote-control` for the folder, with a QR code to pair your phone. Every session you start from the Claude app or claude.ai opens as a tile next to it: the conversation live, tool calls as they run, and approvals you can answer on the tile or in the Inbox.
 
 **Everything around the agent.**
@@ -88,11 +90,13 @@ pitwall rc --worktree                                   # Remote Control: phone 
 pitwall pr                                              # follow this branch's pull request
 pitwall search "/ECONNREFUSED|timeout/"                 # search every terminal's history
 pitwall link <tile> <tile> --handoff                    # pipeline two agents
+pitwall portal web "Add the /v2/orders checkout"        # an agent on another board, connected
+pitwall portals                                         # this agent's portals
 pitwall layout save "Review"                            # and: pitwall layout Review
 pitwall help                                            # everything else
 ```
 
-Agents started by Pitwall get an MCP server with tools for the canvas: `list_tiles`, `open_terminal`, `open`, `read_tile`, `set_status`, `list_links`, `send_message` / `read_messages` (to linked agents), `watch_command`, `follow_pr`, `search_terminals` and `close_tile`.
+Agents started by Pitwall get an MCP server with tools for the canvas: `list_tiles`, `open_terminal`, `open`, `read_tile`, `set_status`, `list_links`, `send_message` / `read_messages` (to linked and portal-connected agents), `list_boards`, `open_portal` / `close_portal`, `watch_command`, `follow_pr`, `search_terminals` and `close_tile`.
 
 ## Build from source
 

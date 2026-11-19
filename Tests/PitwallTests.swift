@@ -345,4 +345,175 @@ final class PitwallTests: XCTestCase {
         XCTAssertEqual(SlashCommands.matches("dep", in: all).first?.name, "deploy")
         XCTAssertEqual(SlashCommands.matches("", in: all).first?.source, .project)
     }
+
+    // MARK: Portals
+
+    private func portalFixture() -> (api: Board, web: Board, a: Tile, w: Tile, shell: Tile) {
+        var api = Board(name: "api", root: "/r/api")
+        var web = Board(name: "web", root: "/r/web")
+        var a = Tile(kind: .agent, frame: CGRect(x: 0, y: 0, width: 726, height: 506)); a.name = "Api agent"; a.cwd = "/r/api"
+        var w = Tile(kind: .agent, frame: CGRect(x: 0, y: 0, width: 726, height: 506)); w.name = "Web agent"; w.cwd = "/r/web"; w.branch = "main"
+        let shell = Tile(kind: .terminal, frame: CGRect(x: 800, y: 0, width: 682, height: 462))
+        a.cwd = "/r/api"
+        api.tiles = [a]
+        web.tiles = [w, shell]
+        return (api, web, a, w, shell)
+    }
+
+    func testPortalRoundTripsThroughJSON() throws {
+        let p = Portal(a: PortalEnd(boardID: "b-1", tileID: "t-1"), b: PortalEnd(boardID: "b-2", tileID: "t-2"), openedBy: "agent", task: "x")
+        let back = try Wire.decoder.decode(Portal.self, from: Wire.encoder.encode(p))
+        XCTAssertEqual(back.id, p.id)
+        XCTAssertEqual(back.key, ["t-1", "t-2"])
+        // Older/minimal files: only the required fields.
+        let minimal = #"{"id":"p-1","a":{"boardID":"b-1","tileID":"t-1"},"b":{"boardID":"b-2","tileID":"t-2"},"createdAt":"2026-11-19T15:00:00Z"}"#
+        let m = try Wire.decoder.decode(Portal.self, from: Data(minimal.utf8))
+        XCTAssertNil(m.task)
+        XCTAssertEqual(m.other("t-1")?.tileID, "t-2")
+        XCTAssertNil(m.other("t-9"))
+    }
+
+    func testPortalsPrunedDropsMissingTilesAndBoards() {
+        let f = portalFixture()
+        let good = Portal(a: PortalEnd(boardID: "stale", tileID: f.w.id), b: PortalEnd(boardID: f.api.id, tileID: f.a.id),
+                          createdAt: Date(timeIntervalSince1970: 1))
+        let dup = Portal(a: PortalEnd(boardID: f.api.id, tileID: f.a.id), b: PortalEnd(boardID: f.web.id, tileID: f.w.id),
+                         createdAt: Date(timeIntervalSince1970: 2))
+        let missing = Portal(a: PortalEnd(boardID: f.web.id, tileID: f.w.id), b: PortalEnd(boardID: "gone", tileID: "t-gone"))
+        let sameBoard = Portal(a: PortalEnd(boardID: f.web.id, tileID: f.w.id), b: PortalEnd(boardID: f.web.id, tileID: f.shell.id))
+        let out = Portals.pruned([dup, missing, good, sameBoard], boards: [f.api, f.web])
+        XCTAssertEqual(out.map(\.id), [good.id], "keeps the oldest of a duplicate pair, drops missing and same-board")
+        XCTAssertEqual(out.first?.a.boardID, f.web.id, "refreshes the board id cache")
+    }
+
+    func testPortalRouteResolvesLinksThenPortals() {
+        var f = portalFixture()
+        let p = Portal(a: PortalEnd(boardID: f.web.id, tileID: f.w.id), b: PortalEnd(boardID: f.api.id, tileID: f.a.id))
+        XCTAssertEqual(Portals.route(from: f.w.id, to: f.a.id, boards: [f.api, f.web], portals: [p]), .portal(p))
+        XCTAssertEqual(Portals.route(from: f.a.id, to: f.w.id, boards: [f.api, f.web], portals: [p]), .portal(p))
+        XCTAssertNil(Portals.route(from: f.shell.id, to: f.a.id, boards: [f.api, f.web], portals: [p]))
+        let l = Link(from: f.w.id, to: f.shell.id, kind: .manual)
+        f.web.links = [l]
+        XCTAssertEqual(Portals.route(from: f.w.id, to: f.shell.id, boards: [f.api, f.web], portals: [p]), .link(l, f.web))
+    }
+
+    func testPortalPeersListsOtherSideWithBoard() {
+        let f = portalFixture()
+        let p = Portal(a: PortalEnd(boardID: f.web.id, tileID: f.w.id), b: PortalEnd(boardID: f.api.id, tileID: f.a.id))
+        let peers = Portals.peers(of: f.w.id, boards: [f.api, f.web], portals: [p])
+        XCTAssertEqual(peers.count, 1)
+        XCTAssertEqual(peers.first?.tile.id, f.a.id)
+        XCTAssertEqual(peers.first?.board.name, "api")
+        XCTAssertTrue(Portals.peers(of: f.shell.id, boards: [f.api, f.web], portals: [p]).isEmpty)
+    }
+
+    func testPortalValidate() {
+        let f = portalFixture()
+        let boards = [f.api, f.web]
+        func v(_ src: String, _ board: String, task: String? = "do it", existing: String? = nil, by: OpenedBy = .agent,
+               enabled: Bool = true, recent: [Date] = [], portals: [Portal] = [], extra: [Board] = []) -> Result<Portals.Plan, PortalError> {
+            Portals.validate(source: src, board: board, task: task, existing: existing, by: by, boards: boards + extra, portals: portals,
+                             hooked: [], agentPortalsEnabled: enabled, recentOpens: recent, now: Date())
+        }
+        func err(_ r: Result<Portals.Plan, PortalError>) -> String? { if case .failure(let e) = r { return e.message }; return nil }
+        XCTAssertEqual(err(v(f.shell.id, "api")), "tile \(f.shell.displayName) isn't an agent")
+        XCTAssertEqual(err(v(f.w.id, "nope")), "no board named nope")
+        XCTAssertTrue(err(v(f.w.id, "api", extra: [Board(name: "API", root: "/old")]))?.hasPrefix("several boards are named api") ?? false)
+        XCTAssertEqual(err(v(f.w.id, "web")), "that's this tile's own board; use a link instead")
+        XCTAssertEqual(err(v(f.w.id, "api", enabled: false)), "portals from agents are turned off in Pitwall Settings")
+        XCTAssertNil(err(v(f.w.id, "api", by: .user, enabled: false)), "the menu works with the toggle off")
+        let now = Date()
+        XCTAssertNotNil(err(v(f.w.id, "api", recent: [now, now, now])))
+        XCTAssertNil(err(v(f.w.id, "api", recent: [now, now])))
+        XCTAssertNil(err(v(f.w.id, "api", recent: [now, now, now.addingTimeInterval(-700)])), "old opens expire")
+        XCTAssertNil(err(v(f.w.id, "api", by: .user, recent: [now, now, now])), "the user isn't rate limited")
+        XCTAssertEqual(err(v(f.w.id, "api", existing: f.shell.id)), "tile \(f.shell.id) isn't an agent on board api")
+        XCTAssertEqual(err(v(f.w.id, "api", task: "  ")), "task required to start a new agent")
+        guard case .success(.spawn(_, _, let target, let task)) = v(f.w.id, f.api.id) else { return XCTFail("spawn by board id") }
+        XCTAssertEqual(target.id, f.api.id)
+        XCTAssertEqual(task, "do it")
+        let p = Portal(a: PortalEnd(boardID: f.web.id, tileID: f.w.id), b: PortalEnd(boardID: f.api.id, tileID: f.a.id))
+        guard case .success(.connect(_, _, _, let tile, let t2, let existing)) = v(f.w.id, "api", task: nil, existing: f.a.id, portals: [p]) else {
+            return XCTFail("connect")
+        }
+        XCTAssertEqual(tile.id, f.a.id)
+        XCTAssertNil(t2)
+        XCTAssertEqual(existing, p)
+    }
+
+    func testPortalBoardLookup() {
+        let a = Board(name: "API", root: "/a"), b = Board(name: "web", root: "/b")
+        XCTAssertEqual(try? Portals.board("api", in: [a, b]).get().id, a.id)
+        XCTAssertEqual(try? Portals.board(b.id, in: [a, b]).get().id, b.id)
+        XCTAssertNil(try? Portals.board("x", in: [a, b]).get())
+    }
+
+    func testPortalSpotStartAndFreeSpot() {
+        var b = Board(name: "x", root: nil)
+        b.viewport = Viewport(origin: CGPoint(x: 100, y: 200), zoom: 0.5)
+        let size = CGSize(width: 726, height: 506)
+        let s = Portals.spotStart(on: b, viewSize: CGSize(width: 1000, height: 800), size: size)
+        // Visible world: 2000 × 1600 from (100, 200); its center is (1100, 1000).
+        XCTAssertEqual(s, CGPoint(x: 1100 - 363, y: 1000 - 253))
+        b.tiles = [Tile(kind: .agent, frame: CGRect(origin: s, size: size))]
+        let free = CanvasController.freeSpot(in: b, size: size, near: s)
+        XCTAssertFalse(CGRect(origin: free, size: size).intersects(b.tiles[0].frame))
+    }
+
+    func testPortalAgentPromptHasMarkerAndReplyInstructions() {
+        let f = portalFixture()
+        let p = Portals.agentPrompt(source: f.w, sourceBoard: f.web, target: f.api, cwd: "/r/api/.worktrees/pw-x", branch: "pw/x", task: "Add /v2/orders")
+        XCTAssertTrue(p.hasPrefix(Portals.promptMarker))
+        XCTAssertTrue(p.contains(f.w.id))
+        XCTAssertTrue(p.contains("\"web\"") && p.contains("\"api\""))
+        XCTAssertTrue(p.contains("send_message"))
+        XCTAssertTrue(p.contains("branch pw/x"))
+        XCTAssertTrue(p.contains("Task: Add /v2/orders"))
+    }
+
+    func testHeadlessRequestCarriesSurfaceEnv() {
+        var t = Tile(kind: .agent, frame: .zero)
+        t.cwd = "/tmp"
+        t.command = "claude -- hi"
+        t.sessionID = "s-1"
+        let r = Sessions.headlessRequest(for: t, boardID: "b-9", size: (100, 30))
+        XCTAssertEqual(r.op, .attach)
+        XCTAssertEqual(r.id, "s-1")
+        XCTAssertEqual(r.script, "claude -- hi")
+        XCTAssertEqual(r.cwd, "/tmp")
+        XCTAssertEqual(r.env?[PitwallEnv.tileID], t.id)
+        XCTAssertEqual(r.env?[PitwallEnv.boardID], "b-9")
+        XCTAssertNotNil(r.env?[PitwallEnv.appSocket])
+        XCTAssertNotNil(r.env?[PitwallEnv.helper])
+        XCTAssertNotNil(r.env?["TERM"])
+        XCTAssertNil(r.env?["GHOSTTY_SHELL_FEATURES"])
+        XCTAssertEqual(Sessions.headlessEnv(tileID: "t", boardID: "b", base: [:])["LANG"], "en_US.UTF-8")
+        XCTAssertEqual(Sessions.headlessEnv(tileID: "t", boardID: "b", base: ["LANG": "de_DE.UTF-8"])["LANG"], "de_DE.UTF-8")
+    }
+
+    func testKeyBytesMatchNamedKeys() {
+        for k in TerminalSurfaceView.namedKeys.keys { XCTAssertNotNil(Sessions.keyBytes[k], k) }
+        let chunks = Sessions.textChunks("ls\necho hi")
+        XCTAssertEqual(chunks.map { String(decoding: $0.0, as: UTF8.self) }, ["\u{1B}[200~ls\u{1B}[201~", "\r", "\u{1B}[200~echo hi\u{1B}[201~"])
+    }
+
+    func testPortalContextIsBounded() {
+        var boards: [Board] = []
+        var portals: [Portal] = []
+        var me = Board(name: "me", root: "/me")
+        let mine = Tile(kind: .agent, frame: .zero)
+        me.tiles = [mine]
+        boards.append(me)
+        for i in 0..<8 {
+            var b = Board(name: "board-\(i)", root: "/r/\(i)")
+            var t = Tile(kind: .agent, frame: .zero); t.name = String(repeating: "x", count: 60)
+            b.tiles = [t]
+            boards.append(b)
+            portals.append(Portal(a: PortalEnd(boardID: me.id, tileID: mine.id), b: PortalEnd(boardID: b.id, tileID: t.id)))
+        }
+        let c = Portals.context(for: mine.id, boards: boards, portals: portals)
+        XCTAssertNotNil(c)
+        XCTAssertLessThanOrEqual(c!.count, 600)
+        XCTAssertNil(Portals.context(for: "t-none", boards: boards, portals: portals))
+    }
 }

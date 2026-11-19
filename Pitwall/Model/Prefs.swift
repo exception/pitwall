@@ -21,6 +21,8 @@ final class Prefs: ObservableObject {
     @Published var animations: Bool { didSet { d.set(animations, forKey: "animations") } }
     /// Flowing current on links when agents talk.
     @Published var liveWires: Bool { didSet { d.set(liveWires, forKey: "liveWires") } }
+    /// Agents may open portals to other boards (the menu always can).
+    @Published var agentPortals: Bool { didSet { d.set(agentPortals, forKey: "agentPortals") } }
 
     // MARK: Canvas
     @Published var showGrid: Bool { didSet { d.set(showGrid, forKey: "showGrid") } }
@@ -58,6 +60,7 @@ final class Prefs: ObservableObject {
         worktreeByDefault = b("worktreeByDefault", true)
         animations = b("animations", true)
         liveWires = b("liveWires", true)
+        agentPortals = b("agentPortals", true)
         showGrid = b("showGrid", true)
         snapToGrid = b("snapToGrid", true)
         cardZoom = d.object(forKey: "cardZoom") as? Double ?? 0.5

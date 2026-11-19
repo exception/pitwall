@@ -87,3 +87,15 @@ extension Date {
         return "\(s / 86400)d"
     }
 }
+
+extension Theme {
+    /// A board's color as a small menu-item swatch.
+    static func swatch(_ colorIndex: Int) -> NSImage {
+        let c = boardColors[colorIndex % boardColors.count]
+        return NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
+            c.setFill()
+            NSBezierPath(roundedRect: r.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3).fill()
+            return true
+        }
+    }
+}

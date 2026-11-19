@@ -109,9 +109,16 @@ final class CanvasView: NSView {
 
     /// Animates the viewport to show `world` rect centered.
     func animate(to target: Viewport, duration: TimeInterval = 0.32) {
+        animate(to: target, duration: duration, persist: true, completion: nil)
+    }
+
+    /// `persist: false` leaves the board's saved viewport alone (portal jumps);
+    /// `completion` runs from the camera's own final step.
+    func animate(to target: Viewport, duration: TimeInterval, persist: Bool, completion: (() -> Void)?) {
         guard Prefs.shared.motion else {
-            setViewport(target)
+            setViewport(target, persist: persist)
             controller?.layoutAll(live: false)
+            completion?()
             return
         }
         let start = viewport
@@ -130,8 +137,8 @@ final class CanvasView: NSView {
             let c = CGPoint(x: c0.x + (c1.x - c0.x) * e, y: c0.y + (c1.y - c0.y) * e)
             v.origin = CGPoint(x: c.x - self.bounds.width / 2 / v.zoom, y: c.y - self.bounds.height / 2 / v.zoom)
             let done = t >= 1
-            self.setViewport(done ? target : v, live: !done, persist: done)
-            if done { self.controller?.layoutAll(live: false) }
+            self.setViewport(done ? target : v, live: !done, persist: done && persist)
+            if done { self.controller?.layoutAll(live: false); completion?() }
             return done
         }
         // Step once per display refresh, in sync with the screen.
@@ -142,6 +149,17 @@ final class CanvasView: NSView {
 
     private var cameraLink: CADisplayLink?
     private var cameraStep: (() -> Bool)?
+
+    /// Stops any camera move and deferred zoom commit (before a board switch,
+    /// so neither writes this board's viewport into the next one).
+    func cancelCamera() {
+        cameraLink?.invalidate()
+        cameraLink = nil
+        cameraStep = nil
+        commitZoomWork?.cancel()
+        commitZoomWork = nil
+        liveZoom = false
+    }
 
     @objc private func cameraTick(_ link: CADisplayLink) {
         if cameraStep?() ?? true {

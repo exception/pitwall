@@ -9,6 +9,8 @@ struct Toast: Identifiable, Equatable {
     var title: String
     var body: String
     var tileID: String?
+    /// Portal toasts: the button jumps through this portal.
+    var portalID: String? = nil
 }
 
 struct BoardActivity: Equatable {
@@ -306,6 +308,25 @@ final class AppModel: ObservableObject {
 
     /// Total estimated spend of agents on the current board.
     var boardCost: Double { board.tiles.compactMap(\.costUSD).reduce(0, +) }
+
+    /// Jumps through a toast's portal from whichever end is on screen.
+    func jump(_ t: Toast) {
+        guard let pid = t.portalID, let p = store.portal(pid), let ctl = controller else { goTo(t); return }
+        let from = store.findTile(p.a.tileID)?.board.id == store.currentBoardID ? p.a.tileID
+            : (store.findTile(p.b.tileID)?.board.id == store.currentBoardID ? p.b.tileID : p.a.tileID)
+        ctl.jumpThroughPortal(pid, from: from)
+        dismiss(t)
+    }
+
+    /// Boards this board has portals to.
+    func portalPeers(of b: Board) -> [Board] {
+        var ids: [String] = []
+        for p in store.portals {
+            if p.a.boardID == b.id, !ids.contains(p.b.boardID) { ids.append(p.b.boardID) }
+            if p.b.boardID == b.id, !ids.contains(p.a.boardID) { ids.append(p.a.boardID) }
+        }
+        return ids.compactMap { store.board($0) }
+    }
 
     func goTo(_ t: Toast) {
         guard let id = t.tileID, let ctl = controller else { return }

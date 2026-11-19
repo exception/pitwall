@@ -17,8 +17,36 @@ final class CanvasController: NSObject {
     private var pollTimer: Timer?
     /// Tiles where Claude Code hooks are active (precise status available).
     var hookedTiles = Set<String>()
+    /// Tiles being typed into without a terminal on screen: their view waits
+    /// until that's done (a surface attaching would cut the paste off).
+    var submitsInFlight = Set<String>()
+    /// Terminal tiles on boards not on screen whose session isn't running
+    /// (from the last poll).
+    var notRunning = Set<String>()
+    var markedNotRunning = Set<String>()
+    /// Portals: recent opens per source agent (rate limit), collapses to play
+    /// when a survivor's board is next shown, and emerges already seen.
+    var portalLog: [String: [Date]] = [:]
+    var pendingCollapse: [String: Date] = [:]
+    var portalSeen: [String: Date] = [:]
+    /// While handling a request: the board new tiles go on (nil = current),
+    /// and whether it came from an agent (never moves the camera or focus).
+    private(set) var creationBoardID: String?
+    private(set) var quietCreation = false
 
     var board: Board { store.current }
+    /// The board new tiles land on right now.
+    var targetBoard: Board { creationBoardID.flatMap { store.board($0) } ?? board }
+
+    /// Runs `body` creating tiles on `boardID` (nil = the current board).
+    /// `quiet`: an agent asked, so the user's camera and focus stay put.
+    func creating<T>(on boardID: String?, quiet: Bool, _ body: () -> T) -> T {
+        let (ob, oq) = (creationBoardID, quietCreation)
+        creationBoardID = boardID
+        quietCreation = quiet
+        defer { creationBoardID = ob; quietCreation = oq }
+        return body()
+    }
 
     init(canvas: CanvasView) {
         self.canvas = canvas
@@ -36,6 +64,7 @@ final class CanvasController: NSObject {
     func reconcile() {
         let b = board
         var restoreFullScreen: String?
+        let justSwitched = renderedBoardID != b.id
         if renderedBoardID != b.id {
             // Full screen belongs to the board: park it, and pick up the new board's.
             if let old = renderedBoardID { fullScreenByBoard[old] = fullScreenTileID }
@@ -65,7 +94,7 @@ final class CanvasController: NSObject {
         for t in b.tiles.sorted(by: { $0.z < $1.z }) {
             if let v = tileViews[t.id] {
                 if v.tile != t { v.update(tile: t) }
-            } else {
+            } else if !submitsInFlight.contains(t.id) {
                 let v = TileView(tile: t, content: makeContent(for: t))
                 v.canvas = canvas
                 tileViews[t.id] = v
@@ -89,6 +118,7 @@ final class CanvasController: NSObject {
             }
             frameViews[f.id]?.summary = summary(of: f.id)
         }
+        refreshPortalChrome(boardChanged: justSwitched)
         if let f = restoreFullScreen, let v = tileViews[f] {
             fullScreenTileID = f
             v.isFullScreen = true
@@ -271,28 +301,44 @@ final class CanvasController: NSObject {
 
     /// Finds a free spot: next to the focused tile, else the visible center.
     func freeSpot(size: CGSize, near: CGPoint? = nil) -> CGPoint {
+        let b = targetBoard
         var p: CGPoint
         if let near { p = near }
+        else if b.id != board.id { p = Portals.spotStart(on: b, viewSize: canvas.bounds.size, size: size) }
         else if let f = focusedTileID.flatMap({ board.tile($0) }) { p = CGPoint(x: f.frame.maxX + 44, y: f.frame.minY) }
         else {
             let v = canvas.visibleWorldRect
             p = CGPoint(x: v.midX - size.width / 2, y: v.midY - size.height / 2 - 40)
         }
-        let others = board.tiles.map { $0.frame.insetBy(dx: -20, dy: -20) }
-        var r = CGRect(origin: p, size: size)
-        var tries = 0
-        while others.contains(where: { $0.intersects(r) }) && tries < 60 {
-            r.origin.x += 44
-            if tries % 12 == 11 { r.origin.x = p.x; r.origin.y += 88 }
-            tries += 1
-        }
-        return CanvasView.snap(r.origin)
+        return Self.freeSpot(in: b, size: size, near: p)
     }
 
     @discardableResult
     func addTile(_ t: Tile, at: CGPoint? = nil, focus: Bool = true, fly: Bool = true) -> String {
         var t = t
         let size = t.frame.size == .zero ? Self.defaultSize(t.kind) : t.frame.size
+        let b = targetBoard
+        if b.id != board.id || quietCreation {
+            // An agent asked, or another board: never touch the user's camera,
+            // focus or pending placement.
+            let origin = at ?? Self.freeSpot(in: b, size: size, near: Portals.spotStart(on: b, viewSize: canvas.bounds.size, size: size))
+            t.frame = CGRect(origin: CanvasView.snap(origin), size: size)
+            t.frameGroupID = b.frames.filter { !$0.collapsed && $0.frame.contains(t.frame) }
+                .min { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }?.id
+            t.z = b.maxZ + 1
+            store.update(b.id) { $0.tiles.append(t) }
+            if b.id == board.id {
+                if let fid = t.frameGroupID { fitFrame(fid) }
+                reconcile()
+            } else if t.isTerminalBacked {
+                // Nothing will show it, so start its session now.
+                if !Sessions.startHeadless(t, boardID: b.id) {
+                    store.updateTile(t.id) { $0.statusMessage = "Starts when you open \(b.name)" }
+                }
+            }
+            model?.objectWillChange.send()
+            return t.id
+        }
         let place = placement(for: size, at: at)
         t.frame = CGRect(origin: place.origin, size: size)
         t.frameGroupID = place.frameID
@@ -315,27 +361,18 @@ final class CanvasController: NSObject {
     }
 
     var defaultCwd: String {
-        if let f = focusedTileID.flatMap({ board.tile($0) }), let c = f.cwd { return c }
-        return board.root ?? NSHomeDirectory()
+        let b = targetBoard
+        if b.id == board.id, let f = focusedTileID.flatMap({ board.tile($0) }), let c = f.cwd { return c }
+        return b.root ?? NSHomeDirectory()
     }
 
     /// Starts a Claude Code agent on a task, optionally in a new worktree.
     @discardableResult
     func newAgent(task: String, repo: String?, worktree: Bool, agent: AgentKind, at: CGPoint? = nil, parent: String? = nil, name: String? = nil,
-                  images: [URL] = []) -> String {
+                  images: [URL] = [], prompt: String? = nil) -> String {
         var cwd = repo ?? defaultCwd
         var branch: String?
-        if worktree, let top = Git.toplevel(cwd) {
-            let slug = ClaudeIntegration.name(fromTask: task).lowercased()
-                .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-            let words = slug.split(separator: "-").prefix(4).joined(separator: "-")
-            let name = "pw/" + String(words.prefix(28)) + "-" + String(UUID().uuidString.prefix(4)).lowercased()
-            switch Git.addWorktree(repo: top, name: name) {
-            case .success(let p): cwd = p; branch = name
-            case .failure(let e): model?.toast(.init(kind: .error, title: "Couldn't create worktree", body: e.localizedDescription))
-            }
-        }
+        if worktree, let wt = makeWorktree(task: task, in: cwd) { cwd = wt.path; branch = wt.branch }
         var t = Tile(kind: .agent, frame: .zero)
         t.cwd = cwd
         t.sessionID = t.id
@@ -344,12 +381,28 @@ final class CanvasController: NSObject {
         t.name = name
         t.worktree = branch == nil ? nil : cwd
         t.branch = branch
-        t.command = agent.command(task: task, images: images)
+        t.command = agent.command(task: prompt ?? task, images: images)
         if !task.isEmpty || !images.isEmpty { t.state = .working; t.stateSince = Date() }
         if agent == .claude { hookedTiles.insert(t.id) }
         let id = addTile(t, at: at)
         if let parent { addLink(from: parent, to: id, kind: .spawned) }
         return id
+    }
+
+    /// A new `pw/<slug>-xxxx` worktree of the repo `dir` is in.
+    func makeWorktree(task: String, in dir: String) -> (path: String, branch: String)? {
+        guard let top = Git.toplevel(dir) else { return nil }
+        let slug = ClaudeIntegration.name(fromTask: task).lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        let words = slug.split(separator: "-").prefix(4).joined(separator: "-")
+        let name = "pw/" + String(words.prefix(28)) + "-" + String(UUID().uuidString.prefix(4)).lowercased()
+        switch Git.addWorktree(repo: top, name: name) {
+        case .success(let p): return (p, name)
+        case .failure(let e):
+            model?.toast(.init(kind: .error, title: "Couldn't create worktree", body: e.localizedDescription))
+            return nil
+        }
     }
 
     /// Opens a path or URL as the right kind of tile.
@@ -386,11 +439,12 @@ final class CanvasController: NSObject {
         open(target: path, at: at)
     }
 
-    func newDiff(for tileID: String? = nil, at: CGPoint? = nil, repo: String? = nil) {
-        let src = repo == nil ? (tileID ?? focusedTileID).flatMap { board.tile($0) } : nil
+    @discardableResult
+    func newDiff(for tileID: String? = nil, at: CGPoint? = nil, repo: String? = nil) -> String? {
+        let src = repo == nil ? (tileID ?? focusedTileID).flatMap { store.findTile($0)?.tile } : nil
         let dir = repo ?? src?.worktree ?? src?.cwd ?? defaultCwd
         guard let top = Git.toplevel(dir) else {
-            model?.toast(.init(kind: .error, title: "Not a git repository", body: dir)); return
+            model?.toast(.init(kind: .error, title: "Not a git repository", body: dir)); return nil
         }
         var t = Tile(kind: .diff, frame: .zero)
         t.target = top
@@ -401,6 +455,7 @@ final class CanvasController: NSObject {
         if let s = src { near = CGPoint(x: s.frame.maxX + 44, y: s.frame.minY) }
         let id = addTile(t, at: at ?? near.map { freeSpot(size: Self.defaultSize(.diff), near: $0) })
         if let s = src { addLink(from: s.id, to: id, kind: .spawned) }
+        return id
     }
 
     /// Asks for a command, then opens a watch tile running it.
@@ -423,35 +478,42 @@ final class CanvasController: NSObject {
         return ""
     }
 
-    func newFrame(around ids: [String]? = nil, prompt askName: Bool = true) {
-        let tiles = (ids ?? focusedTileID.map { [$0] } ?? []).compactMap { board.tile($0) }
+    @discardableResult
+    func newFrame(around ids: [String]? = nil, prompt askName: Bool = true) -> String {
+        let b = targetBoard
+        let tiles = (ids ?? (b.id == board.id ? focusedTileID.map { [$0] } : nil) ?? []).compactMap { b.tile($0) }
         var rect: CGRect
         if tiles.isEmpty {
-            let v = canvas.visibleWorldRect
-            rect = CGRect(x: v.midX - 400, y: v.midY - 300, width: 800, height: 600)
+            if b.id == board.id {
+                let v = canvas.visibleWorldRect
+                rect = CGRect(x: v.midX - 400, y: v.midY - 300, width: 800, height: 600)
+            } else {
+                let o = Portals.spotStart(on: b, viewSize: canvas.bounds.size, size: CGSize(width: 800, height: 600))
+                rect = CGRect(origin: o, size: CGSize(width: 800, height: 600))
+            }
         } else {
             rect = tiles.map(\.frame).reduce(tiles[0].frame) { $0.union($1) }.insetBy(dx: -24, dy: -24)
             rect.origin.y -= 44; rect.size.height += 44
         }
         var f = FrameGroup(title: "New frame", frame: CanvasView.snap(rect))
-        f.colorIndex = board.frames.count
+        f.colorIndex = b.frames.count
         let members = Set(tiles.map(\.id))
-        store.update { b in
+        store.update(b.id) { b in
             b.frames.append(f)
             for i in b.tiles.indices where members.contains(b.tiles[i].id) { b.tiles[i].frameGroupID = f.id }
         }
+        guard b.id == board.id else { return f.id }
         reconcile()
         if askName { renameFrame(f.id) }
+        return f.id
     }
 
     // MARK: Moving, closing, focus
 
     func moveTile(_ id: String, to frame: CGRect, persist: Bool) {
-        if persist { store.update { b in if let i = b.tiles.firstIndex(where: { $0.id == id }) { b.tiles[i].frame = frame } } }
-        else {
-            // Fast path while dragging: no save.
-            store.update { b in if let i = b.tiles.firstIndex(where: { $0.id == id }) { b.tiles[i].frame = frame } }
-        }
+        guard let owner = store.findTile(id)?.board else { return }
+        store.update(owner.id) { b in if let i = b.tiles.firstIndex(where: { $0.id == id }) { b.tiles[i].frame = frame } }
+        guard owner.id == board.id else { return }
         if let v = tileViews[id], let t = board.tile(id) {
             v.update(tile: t)
             v.frame = canvas.toView(frame)
@@ -477,9 +539,10 @@ final class CanvasController: NSObject {
         frameViews[id]?.update(board.frames.first { $0.id == id }!)
     }
 
-    func closeTile(_ id: String) {
+    func closeTile(_ id: String, by closer: PortalCloser = .user) {
         // Any board: waits close themselves while you're looking elsewhere.
         guard let (owner, t) = store.findTile(id) else { return }
+        for p in store.portals(of: id) { closePortal(p.id, by: closer, closing: id) }
         if fullScreenTileID == id { fullScreenTileID = nil; model?.fullScreen = false }
         if t.isTerminalBacked, let sid = t.sessionID { Sessions.kill(sid) }
         sessions[id] = nil
@@ -504,6 +567,8 @@ final class CanvasController: NSObject {
             b.links.removeAll { l in l.from == id || l.to == id || !remaining.contains(l.to) || !remaining.contains(l.from) }
         }
         store.inbox[id] = nil
+        submitsInFlight.remove(id)
+        notRunning.remove(id)
         if focusedTileID == id { focusedTileID = nil; model?.focusedTileID = nil }
         reconcile()
     }
@@ -695,6 +760,8 @@ final class CanvasController: NSObject {
 
     func switchBoard(_ id: String) {
         guard id != store.currentBoardID else { return }
+        // A tween still running would write this board's viewport into the next one.
+        canvas.cancelCamera()
         store.currentBoardID = id
         store.scheduleSave()
         reconcile()   // parks this board's full-screen tile and restores the other's
@@ -803,6 +870,7 @@ final class CanvasController: NSObject {
         if t.kind == .agent {
             m.addItem(MenuAction("Review with a new agent") { [weak self] in self?.startReview(of: id) })
         }
+        if store.boards.count > 1 || !store.portals(of: id).isEmpty { addPortalItems(to: m, for: t) }
         let links = board.links.filter { $0.from == id || $0.to == id }
         if !links.isEmpty {
             m.addItem(.separator())
@@ -872,14 +940,21 @@ final class CanvasController: NSObject {
 
     // MARK: Links & messaging
 
-    func addLink(from: String, to: String, kind: Link.Kind = .manual) {
-        guard from != to, !board.links.contains(where: { ($0.from == from && $0.to == to) || ($0.from == to && $0.to == from) }) else { return }
-        store.update { $0.links.append(Link(from: from, to: to, kind: kind)) }
+    /// Links two tiles on the same board (cross-board pairs need a portal).
+    @discardableResult
+    func addLink(from: String, to: String, kind: Link.Kind = .manual) -> Bool {
+        guard from != to, let owner = store.findTile(from)?.board, owner.tile(to) != nil else { return false }
+        guard !owner.links.contains(where: { ($0.from == from && $0.to == to) || ($0.from == to && $0.to == from) }) else { return true }
+        store.update(owner.id) { $0.links.append(Link(from: from, to: to, kind: kind)) }
         canvas.linksView.refresh()
+        return true
     }
 
+    private func boardWithLink(_ id: String) -> String? { store.boards.first { $0.links.contains { $0.id == id } }?.id }
+
     func removeLink(_ id: String) {
-        store.update { $0.links.removeAll { $0.id == id } }
+        guard let b = boardWithLink(id) else { return }
+        store.update(b) { $0.links.removeAll { $0.id == id } }
         canvas.linksView.refresh()
     }
 
@@ -891,38 +966,84 @@ final class CanvasController: NSObject {
         }
     }
 
-    /// Delivers a message from one tile's agent to a linked tile's agent.
-    func sendMessage(from: String, to: String, text: String) -> String? {
-        guard let (b, target) = store.findTile(to) else { return "No such tile" }
-        guard let link = b.links.first(where: { ($0.from == from && $0.to == to) || ($0.from == to && $0.to == from) }) else {
-            return "Those tiles aren't linked. Ask the user to connect them on the canvas."
+    enum Delivery: Equatable {
+        case delivered
+        case queued(String)
+        var text: String {
+            switch self { case .delivered: return "delivered"; case .queued(let r): return "queued: " + r }
         }
-        guard target.kind == .agent || hookedTiles.contains(to) else { return "\(target.displayName) isn't running an agent." }
-        let source = store.findTile(from)?.tile
-        let fromName = source?.displayName ?? from
+    }
+
+    /// Delivers a message from one tile's agent to a linked (or portaled) tile's agent.
+    @discardableResult
+    func sendMessage(from: String, to: String, text: String) -> Result<Delivery, PortalError> {
+        guard let (b, target) = store.findTile(to) else { return .failure(PortalError("No such tile")) }
+        guard let route = Portals.route(from: from, to: to, boards: store.boards, portals: store.portals) else {
+            return .failure(PortalError("Those tiles aren't linked. Ask the user to connect them on the canvas, or use open_portal for an agent on another board."))
+        }
+        guard target.kind == .agent || hookedTiles.contains(to) else { return .failure(PortalError("\(target.displayName) isn't running an agent.")) }
+        let srcInfo = store.findTile(from)
+        let source = srcInfo?.tile
+        var fromName = source?.displayName ?? from
+        switch route {
+        case .link(let link, let lb):
+            store.update(lb.id) { bb in if let i = bb.links.firstIndex(where: { $0.id == link.id }) { bb.links[i].lastActivity = Date() } }
+            if lb.id == board.id { canvas.linksView.pulse(link: link, fromTile: from, text: text) }
+        case .portal(let p):
+            if let sb = srcInfo?.board { fromName += " (\(sb.name))" }
+            portalTransit(p, from: from, to: to)
+        }
         var msg = AgentMessage(from: from, fromName: fromName, text: text)
         if [.logs, .pr, .run].contains(source?.kind) { msg.noReply = true }
-        store.update(b.id) { bb in if let i = bb.links.firstIndex(where: { $0.id == link.id }) { bb.links[i].lastActivity = Date() } }
-        if b.id == board.id { canvas.linksView.pulse(link: link, fromTile: from, text: text) }
         if target.state == .working || target.state == .waiting {
             store.inbox[to, default: []].append(msg) // delivered by the Stop hook
-        } else if let s = surface(for: to) {
+            return .success(.delivered)
+        }
+        if let s = surface(for: to) {
             s.submit(Self.format(msg))
             setState(to, .working, message: "Message from \(fromName)")
-        } else if let sid = target.sessionID {
-            // Its board isn't open: type it into the session directly.
-            setState(to, .working, message: "Message from \(fromName)")
-            Sessions.submit(sid, text: Self.format(msg)) { [weak self] ok in
-                guard let self, !ok else { return }
-                // Couldn't reach it: hand it over when it's next shown or finishes a turn.
-                self.store.inbox[to, default: []].append(msg)
-                self.pendingDelivery.insert(to)
-                self.setState(to, .idle, message: "Message waiting: \(fromName)")
-            }
-        } else {
+            return .success(.delivered)
+        }
+        let queuedReason = "\(target.displayName) isn't running; it gets the message when board \(b.name) is opened"
+        guard let sid = target.sessionID, !notRunning.contains(to) else {
             store.inbox[to, default: []].append(msg)
             pendingDelivery.insert(to)
+            return .success(.queued(queuedReason))
         }
+        // Its board isn't open: type it into the session directly. Its view
+        // waits until the paste is done.
+        submitsInFlight.insert(to)
+        setState(to, .working, message: "Message from \(fromName)")
+        Sessions.submit(sid, text: Self.format(msg)) { [weak self] ok in
+            guard let self else { return }
+            self.inputFinished(to)
+            guard !ok else { return }
+            // Couldn't reach it: hand it over when it's next shown or finishes a turn.
+            self.store.inbox[to, default: []].append(msg)
+            self.pendingDelivery.insert(to)
+            self.setState(to, .idle, message: "Message waiting: \(fromName)")
+        }
+        return .success(.delivered)
+    }
+
+    /// `sendMessage` for callers that only care whether it failed.
+    func messageError(from: String, to: String, text: String) -> String? {
+        if case .failure(let e) = sendMessage(from: from, to: to, text: text) { return e.message }
+        return nil
+    }
+
+    /// A background paste into a tile finished: its view may be created now.
+    func inputFinished(_ id: String) {
+        submitsInFlight.remove(id)
+        if board.tile(id) != nil { reconcile() }
+    }
+
+    /// Types into a terminal whether or not it's on screen.
+    func typeInto(_ id: String, chunks: [(Data, UInt32)]) -> String? {
+        guard let t = store.findTile(id)?.tile, t.isTerminalBacked, let sid = t.sessionID else { return "no terminal with that id" }
+        if notRunning.contains(id) { return "\(t.displayName) isn't running" }
+        submitsInFlight.insert(id)
+        Sessions.sendInput(sid, chunks: chunks) { [weak self] _ in self?.inputFinished(id) }
         return nil
     }
 
@@ -1001,7 +1122,7 @@ final class CanvasController: NSObject {
         switch event {
         case "UserPromptSubmit":
             if let p = args["prompt"], !p.isEmpty {
-                Timelines.shared.add(tileID, p.hasPrefix("[Pitwall message") ? .message : .prompt, p)
+                Timelines.shared.add(tileID, p.hasPrefix("[Pitwall message") || p.hasPrefix(Portals.promptMarker) ? .message : .prompt, p)
             }
         case "PreToolUse":
             if let d = describe(tool: tool, args: args) { Timelines.shared.add(tileID, tool == "Task" || tool == "Agent" ? .subagent : .tool, d) }
@@ -1020,7 +1141,7 @@ final class CanvasController: NSObject {
         case "SessionStart":
             store.updateTile(tileID) { if $0.kind == .terminal { $0.kind = .agent } }
             setState(tileID, .idle)
-            if let ctx = sharedNotesContext(for: tileID) {
+            if let ctx = promptContext(for: tileID) {
                 return Self.hookJSON(["hookSpecificOutput": ["hookEventName": "SessionStart", "additionalContext": ctx]])
             }
         case "UserPromptSubmit":
@@ -1028,14 +1149,14 @@ final class CanvasController: NSObject {
             let prompt = args["prompt"] ?? ""
             store.updateTile(tileID) { t in
                 if t.kind == .terminal { t.kind = .agent }
-                if !prompt.isEmpty && !prompt.hasPrefix("[Pitwall message") {
+                if !prompt.isEmpty && !prompt.hasPrefix("[Pitwall message") && !prompt.hasPrefix(Portals.promptMarker) {
                     t.task = prompt
                     if t.name == nil && (t.autoName == nil || t.autoName == AgentKind.claude.title) { t.autoName = ClaudeIntegration.name(fromTask: prompt) }
                 }
             }
             clearFinishedSubagents(of: tileID)
             setState(tileID, .working, message: nil)
-            if let ctx = sharedNotesContext(for: tileID) {
+            if let ctx = promptContext(for: tileID) {
                 return Self.hookJSON(["hookSpecificOutput": ["hookEventName": "UserPromptSubmit", "additionalContext": ctx]])
             }
         case "PreToolUse":
@@ -1129,20 +1250,27 @@ final class CanvasController: NSObject {
             handoffLog[link.id] = recent + [Date()]
             var text = "\(src.displayName) finished its step. Its result:\n\n" + String(result.prefix(4000))
             if let br = src.branch { text += "\n\n(Its work is on branch \(br)\(src.worktree.map { " in \($0)" } ?? "").)" }
-            if let err = sendMessage(from: tileID, to: link.to, text: text) {
-                model?.toast(.init(kind: .error, title: "Couldn't hand off", body: err, tileID: link.to))
+            if case .failure(let err) = sendMessage(from: tileID, to: link.to, text: text) {
+                model?.toast(.init(kind: .error, title: "Couldn't hand off", body: err.message, tileID: link.to))
             }
         }
     }
 
     func toggleHandoff(_ linkID: String) {
-        store.update { b in
+        guard let bid = boardWithLink(linkID) else { return }
+        store.update(bid) { b in
             if let i = b.links.firstIndex(where: { $0.id == linkID }) {
                 b.links[i].handoff = !(b.links[i].handoff ?? false)
                 b.links[i].kind = .manual
             }
         }
         canvas.linksView.refresh()
+    }
+
+    /// Linked notes plus portal peers, given to the agent on every prompt.
+    func promptContext(for tileID: String) -> String? {
+        let parts = [sharedNotesContext(for: tileID), Portals.context(for: tileID, boards: store.boards, portals: store.portals)].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
     }
 
     /// Notes linked to an agent are given to it as context on every prompt.
@@ -1174,10 +1302,18 @@ final class CanvasController: NSObject {
     }
 
     /// Fan-out: the same task in N worktrees, framed, with a Compare tile.
-    func fanOut(task: String, repo: String?, agent: AgentKind, count: Int, images: [URL] = []) {
+    @discardableResult
+    func fanOut(task: String, repo: String?, agent: AgentKind, count: Int, images: [URL] = []) -> [String] {
         let size = Self.defaultSize(.agent)
-        let v = canvas.visibleWorldRect
-        var origin = CanvasView.snap(CGPoint(x: v.minX + 120, y: v.minY + 140))
+        let tb = targetBoard
+        let onScreen = tb.id == board.id
+        var origin: CGPoint
+        if onScreen {
+            let v = canvas.visibleWorldRect
+            origin = CanvasView.snap(CGPoint(x: v.minX + 120, y: v.minY + 140))
+        } else {
+            origin = Portals.spotStart(on: tb, viewSize: canvas.bounds.size, size: CGSize(width: (size.width + 44) * CGFloat(count), height: size.height))
+        }
         origin = freeSpot(size: CGSize(width: (size.width + 44) * CGFloat(count), height: size.height + 300), near: origin)
         var ids: [String] = []
         for i in 0..<count {
@@ -1195,15 +1331,18 @@ final class CanvasController: NSObject {
         var rect = CGRect(x: origin.x - 24, y: origin.y - 68, width: (size.width + 44) * CGFloat(count) - 20, height: size.height + 330 + 44 + 92)
         rect = CanvasView.snap(rect)
         var f = FrameGroup(title: "Fan-out · " + ClaudeIntegration.name(fromTask: task), frame: rect)
-        f.colorIndex = board.frames.count
+        f.colorIndex = tb.frames.count
         let members = Set(ids + [cmpID])
-        store.update { b in
+        store.update(tb.id) { b in
             b.frames.append(f)
             for i in b.tiles.indices where members.contains(b.tiles[i].id) { b.tiles[i].frameGroupID = f.id }
         }
-        fitFrame(f.id)
-        reconcile()
-        zoomToFit()
+        if onScreen {
+            fitFrame(f.id)
+            reconcile()
+            if !quietCreation { zoomToFit() }
+        }
+        return ids + [cmpID]
     }
 
     /// Merges a winning attempt into its repo (in a terminal so you see it).
@@ -1420,10 +1559,10 @@ final class CanvasController: NSObject {
     /// session itself ended (the user typed `exit`); if the session was lost
     /// (daemon gone), keep the tile so it can be restarted.
     private func sessionEnded(_ id: String) {
-        guard let t = store.findTile(id)?.tile, let sid = t.sessionID else { closeTile(id); return }
+        guard let t = store.findTile(id)?.tile, let sid = t.sessionID else { closeTile(id, by: .auto); return }
         let info = try? UnixSocket.roundTrip(PitwallPaths.daemonSocket.path, DaemonRequest(op: .info, id: sid), as: DaemonResponse.self)
         if let s = info?.session, !s.alive {
-            closeTile(id)
+            closeTile(id, by: .auto)
         } else if let s = info?.session, s.alive {
             return // detached by another client; nothing to do
         } else {
@@ -1433,7 +1572,16 @@ final class CanvasController: NSObject {
 
     /// Recreates a tile's terminal (a fresh session if the old one is gone).
     func restartSession(_ id: String) {
-        guard let v = tileViews[id] else { return }
+        guard let v = tileViews[id] else {
+            // Not on screen: start the (new) session without a terminal.
+            sessions[id] = nil
+            setState(id, .idle, message: nil)
+            if let (b, t) = store.findTile(id), t.isTerminalBacked, b.id != store.currentBoardID {
+                notRunning.remove(id)
+                Sessions.startHeadless(t, boardID: b.id)
+            }
+            return
+        }
         v.content.willClose()
         v.removeFromSuperview()
         tileViews[id] = nil
@@ -1482,10 +1630,13 @@ final class CanvasController: NSObject {
         let pollStart = CACurrentMediaTime()
         defer { DevStats.pollMillis = (CACurrentMediaTime() - pollStart) * 1000 }
         pollRuns()
-        let infos = Sessions.list()
+        let listed = Sessions.listResult()
+        let infos = listed ?? []
         DevStats.daemonSessions = infos.count
         var byID: [String: SessionInfo] = [:]
         for i in infos { byID[i.id] = i }
+        // Only trust "not running" when the daemon actually answered.
+        if listed != nil { updateNotRunning(byID) }
         for b in store.boards {
             for t in b.tiles where t.isTerminalBacked {
                 guard let sid = t.sessionID, let info = byID[sid] else { continue }
@@ -1524,6 +1675,27 @@ final class CanvasController: NSObject {
         scanScreens(byID: byID)
         layoutSubagents()
         reconcile()
+    }
+
+    /// Terminal tiles on hidden boards whose session isn't alive. Portal ends
+    /// among them (Pitwall or the Mac restarted) are marked, not restarted:
+    /// starting them unseen would re-run their task.
+    private func updateNotRunning(_ byID: [String: SessionInfo]) {
+        var nr = Set<String>()
+        for b in store.boards where b.id != board.id {
+            for t in b.tiles where t.isTerminalBacked && tileViews[t.id] == nil && !submitsInFlight.contains(t.id) {
+                if let sid = t.sessionID, byID[sid]?.alive == true { continue }
+                nr.insert(t.id)
+            }
+        }
+        notRunning = nr
+        markedNotRunning.formIntersection(nr)
+        for id in nr where !markedNotRunning.contains(id) && !store.portals(of: id).isEmpty {
+            markedNotRunning.insert(id)
+            guard let t = store.findTile(id)?.tile, !(t.statusMessage?.hasPrefix("Starts when you open") ?? false) else { continue }
+            store.updateTile(id) { $0.state = .idle; $0.statusMessage = "Not running (Pitwall restarted). Open its board to restart it." }
+            model?.objectWillChange.send()
+        }
     }
 
     // MARK: Screen scanning: blocking prompts + image paths

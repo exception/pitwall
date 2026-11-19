@@ -4,7 +4,7 @@ import Darwin
 let usage = """
 pitwall — control Pitwall from the terminal
 
-  pitwall tile list                         List tiles on the current board (JSON)
+  pitwall tile list [--board B]             List tiles on the current board, or board B (JSON)
   pitwall tile new [--cwd DIR] [--title T] [-- CMD...]
                                             Open a terminal tile (optionally running CMD)
   pitwall agent "<task>" [--cwd DIR] [--worktree] [--codex] [--count N]
@@ -27,7 +27,12 @@ pitwall — control Pitwall from the terminal
   pitwall tile key <id> <key>...            Press keys in a terminal (up, down, return, escape…)
   pitwall view <x> <y> <zoom> [seconds]     Move the canvas (world point at top-left)
   pitwall ui <action> [text]                Drive the interface (demos): dispatch, search, inbox, approve, close
-  pitwall board new <name> [--root DIR] | board switch <name>
+  pitwall board new <name> [--root DIR] | board switch <name> | board list
+  pitwall portal <board> [task…] [--to TILE] [--no-worktree] [--from TILE]
+                                            Open a portal from this agent to another board: a new
+                                            agent there on the task, or the agent --to TILE
+  pitwall portals [--from TILE]             List this agent's portals (JSON)
+  pitwall portals close <portal-id|tile-id> [--from TILE]
   pitwall frame new [--title T] [TILE...]   Put tiles in a new frame
   pitwall frame list | collapse <id> | expand <id>
   pitwall tile read <id> [--bytes N]        Print a tile's recent terminal output
@@ -84,7 +89,9 @@ func runTile(_ args: [String]) -> Int32 {
     do {
         switch sub {
         case "list", "ls":
-            return Control.printResult(try Control.send("tile.list"))
+            var a: [String: String] = [:]
+            if let i = rest.firstIndex(of: "--board"), let b = rest[safe: i + 1] { a["board"] = b }
+            return Control.printResult(try Control.send("tile.list", args: a))
         case "new", "create":
             var a: [String: String] = [:]
             var i = 0
@@ -295,7 +302,12 @@ case "view":
     do { exit(Control.printResult(try Control.send("view", args: ["x": rest[0], "y": rest[1], "zoom": rest[2], "duration": rest[safe: 3] ?? "0.32"]))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "board":
-    guard let sub = rest.first, let name = rest[safe: 1] else { fputs("board new <name> [--root DIR] | board switch <name>\n", stderr); exit(2) }
+    let boardUsage = "board new <name> [--root DIR] | board switch <name> | board list\n"
+    guard let sub = rest.first else { fputs(boardUsage, stderr); exit(2) }
+    if sub == "list" {
+        do { exit(Control.printResult(try Control.send("board.list"))) } catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
+    }
+    guard let name = rest[safe: 1] else { fputs(boardUsage, stderr); exit(2) }
     var a = ["name": name]
     if let i = rest.firstIndex(of: "--root"), let r = rest[safe: i + 1] { a["root"] = URL(fileURLWithPath: r).standardizedFileURL.path }
     do { exit(Control.printResult(try Control.send(sub == "new" ? "board.new" : "board.switch", args: a))) }
@@ -363,6 +375,44 @@ case "link":
     guard ids.count == 2 else { fputs("link <tile> <tile> [--handoff]\n", stderr); exit(2) }
     do { exit(Control.printResult(try Control.send("link.add", tile: ids[0], args: ["to": ids[1], "handoff": rest.contains("--handoff") ? "1" : "0"]))) }
     catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
+case "portal":
+    // `portal <board> [task…]`: the first argument is always a board, so a
+    // board named "list" never collides with listing (that's `portals`).
+    guard let board = rest.first, !board.hasPrefix("--") else {
+        fputs("portal <board> [task…] [--to TILE] [--no-worktree] [--from TILE]\n", stderr); exit(2)
+    }
+    var a: [String: String] = ["board": board]
+    var task: [String] = []
+    var i = 1
+    while i < rest.count {
+        switch rest[i] {
+        case "--to": i += 1; a["to"] = rest[safe: i]
+        case "--from": i += 1; a["source"] = rest[safe: i]
+        case "--no-worktree": a["worktree"] = "0"
+        case "--agent": i += 1; a["agent"] = rest[safe: i]
+        default: task.append(rest[i])
+        }
+        i += 1
+    }
+    if !task.isEmpty { a["task"] = task.joined(separator: " ") }
+    do { exit(Control.printResult(try Control.send("portal.open", args: a, timeout: 60))) }
+    catch { fputs("pitwall: is the app running? (\(error))\n", stderr); exit(1) }
+case "portals":
+    var a: [String: String] = [:]
+    var pos: [String] = []
+    var i = 0
+    while i < rest.count {
+        if rest[i] == "--from" { i += 1; a["source"] = rest[safe: i] } else { pos.append(rest[i]) }
+        i += 1
+    }
+    do {
+        if pos.first == "close" {
+            guard let target = pos[safe: 1] else { fputs("portals close <portal-id|tile-id>\n", stderr); exit(2) }
+            a[target.hasPrefix("p-") ? "portal" : "to"] = target
+            exit(Control.printResult(try Control.send("portal.close", args: a)))
+        }
+        exit(Control.printResult(try Control.send("portal.list", args: a)))
+    } catch { fputs("pitwall: \(error)\n", stderr); exit(1) }
 case "status":
     guard let state = rest.first else { fputs("status <state> [message]\n", stderr); exit(2) }
     let msg = rest.dropFirst().joined(separator: " ")

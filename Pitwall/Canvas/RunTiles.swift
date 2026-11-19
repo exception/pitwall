@@ -152,8 +152,8 @@ extension CanvasController {
         t.statusMessage = "Waiting on CI run \(runID)"
         t.state = .working
         var spot: CGPoint?
-        if let f = from.flatMap({ board.tile($0) }) {
-            spot = freeSpot(size: Self.defaultSize(.run), near: CGPoint(x: f.frame.maxX + 44, y: f.frame.minY))
+        if let (b, f) = from.flatMap({ store.findTile($0) }) {
+            spot = Self.freeSpot(in: b, size: Self.defaultSize(.run), near: CGPoint(x: f.frame.maxX + 44, y: f.frame.minY))
         }
         let id = addTile(t, at: spot)
         if let from { addLink(from: from, to: id, kind: .spawned); refreshBackground(from) }
@@ -274,7 +274,7 @@ extension CanvasController {
         }
         var text = "Your wait on \(label) finished after \(took.clock): \(ok ? "SUCCESS" : "FAILED (\(conclusion))").\n\(detail)"
         if let n = t.waitNote { text += "\nWhat you planned to do next: \(n)" }
-        if let err = sendMessage(from: id, to: agent, text: text) {
+        if let err = messageError(from: id, to: agent, text: text) {
             model?.toast(.init(kind: .error, title: "Couldn't wake the agent", body: err, tileID: id))
             return
         }
@@ -282,7 +282,7 @@ extension CanvasController {
         if ok {
             // Give it a moment on screen, then tidy up.
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
-                if self?.store.findTile(id)?.tile.state == .done { self?.closeTile(id) }
+                if self?.store.findTile(id)?.tile.state == .done { self?.closeTile(id, by: .auto) }
             }
         }
     }

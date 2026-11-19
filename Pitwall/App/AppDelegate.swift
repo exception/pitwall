@@ -263,19 +263,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let a = main.model.activity(on: b)
             if a.waiting > 0 { item.badge = NSMenuItemBadge(count: a.waiting) }
             else if a.failing + a.done > 0 { item.badge = NSMenuItemBadge(string: a.summary) }
-            item.image = Self.swatch(Theme.boardColors[b.colorIndex % Theme.boardColors.count])
+            item.image = Theme.swatch(b.colorIndex)
             menu.addItem(item)
         }
         menu.addItem(.separator())
         menu.addItem(MenuAction("Add Board…") { [weak self] in self?.main.model.addBoard() })
-    }
-
-    private static func swatch(_ c: NSColor) -> NSImage {
-        NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
-            c.setFill()
-            NSBezierPath(roundedRect: r.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3).fill()
-            return true
-        }
     }
 
     /// Symlinks the bundled helper to /usr/local/bin/pitwall (asks for permission via osascript).
