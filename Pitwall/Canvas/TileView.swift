@@ -57,6 +57,24 @@ final class TileView: NSView {
     var isFullScreen = false { didSet { updateFullScreenChrome() } }
     private let connector = CALayer()
     private let statusCard = StatusCardView()
+    private let portalButton = NSButton()
+    private let portalRing = PortalRingLayer()
+    private var portalSymbolKey: (zoom: CGFloat, title: String, color: Int) = (0, "", -1)
+    /// This tile's portals to other boards (badge, ring, card line).
+    var portalBadges: [PortalBadge] = [] {
+        didSet {
+            guard oldValue != portalBadges else { return }
+            let had = !oldValue.isEmpty
+            statusCard.portals = portalBadges
+            portalButton.isHidden = portalBadges.isEmpty
+            if portalBadges.isEmpty { if had { portalRing.collapse { [weak self] in self?.portalRing.isHidden = self?.portalBadges.isEmpty ?? true } } }
+            else { portalRing.isHidden = false; portalRing.opacity = 1 }
+            configurePortalRing()
+            needsLayout = true
+        }
+    }
+    /// The vortex turns while either end works, or just after a message.
+    var portalActive = false { didSet { if oldValue != portalActive { configurePortalRing() } } }
     private var hovering = false { didSet { updateHoverChrome() } }
     private(set) var zoom: CGFloat = 0 // forces fonts on first apply
     var isFocusedTile = false { didSet { if oldValue != isFocusedTile { updateRing() } } }
@@ -160,6 +178,18 @@ final class TileView: NSView {
 
         statusCard.isHidden = true
         addSubview(statusCard)
+
+        portalButton.isBordered = false
+        portalButton.imagePosition = .imageLeading
+        portalButton.imageHugsTitle = true
+        portalButton.target = self
+        portalButton.action = #selector(portalClicked)
+        portalButton.wantsLayer = true
+        portalButton.isHidden = true
+        header.addSubview(portalButton)
+        portalRing.zPosition = 10
+        portalRing.isHidden = true
+        layer?.addSublayer(portalRing)
 
         updateTrackingAreas()
         update(tile: tile)
@@ -314,6 +344,52 @@ final class TileView: NSView {
         layoutChrome()
     }
 
+    private func configurePortalRing() {
+        guard let first = portalBadges.first else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            portalRing.configure(color: first.color, count: portalBadges.count, spinning: portalActive)
+        }
+        let names = portalBadges.map { "\($0.otherName) on \($0.boardName)" }.joined(separator: ", ")
+        portalButton.toolTip = "Portal to " + names + (portalBadges.count == 1 ? ". Click to jump there." : "")
+        portalButton.setAccessibilityLabel("Portal to " + names)
+    }
+
+    /// Where the ring sits, in this view's coordinates.
+    var ringPoint: CGPoint { CGPoint(x: bounds.maxX - 2 * zoom, y: 2 * zoom) }
+    /// The ring's center in the canvas's coordinates.
+    var ringCenter: CGPoint { canvas.map { convert(ringPoint, to: $0) } ?? ringPoint }
+    private var portalColor: NSColor { portalBadges.first?.color ?? Theme.blue }
+    /// Middle of the header, where sparks start and land.
+    private var headerSparkPoint: CGPoint { CGPoint(x: min(bounds.width * 0.4, 160 * zoom), y: Theme.headerHeight * zoom / 2) }
+
+    func portalOpened() {
+        portalRing.opened()
+        PortalSpark.fly(in: layer!, from: headerSparkPoint, to: ringPoint, color: portalColor, zoom: zoom, delay: 0.18)
+        flashReceive(color: portalColor)
+    }
+
+    func portalArrived() {
+        portalRing.opacity = 1
+        portalRing.burst()
+        PortalSpark.fly(in: layer!, from: ringPoint, to: headerSparkPoint, color: portalColor, zoom: zoom)
+        flashReceive(color: portalColor)
+    }
+
+    func portalPulse(outbound: Bool) {
+        if outbound {
+            PortalSpark.fly(in: layer!, from: headerSparkPoint, to: ringPoint, color: portalColor, zoom: zoom)
+            DispatchQueue.main.asyncAfter(deadline: .now() + (Prefs.shared.motion ? 0.3 : 0)) { [weak self] in self?.portalRing.pulse() }
+        } else {
+            portalRing.pulse()
+            PortalSpark.fly(in: layer!, from: ringPoint, to: headerSparkPoint, color: portalColor, zoom: zoom, delay: 0.1)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.flashReceive(color: Theme.color(for: .working)) }
+        }
+    }
+
+    @objc private func portalClicked() {
+        canvas?.controller?.portalBadgeClicked(tile.id, from: portalButton)
+    }
+
     private func layoutChrome() {
         let b = bounds
         CATransaction.begin()
@@ -381,6 +457,27 @@ final class TileView: NSView {
             stopButton.layer?.backgroundColor = Theme.pill.cgColor
             metaRight = stopButton.frame.minX - 8 * zoom
         }
+        if !portalButton.isHidden, let first = portalBadges.first {
+            let title = portalBadges.count == 1 ? String(first.boardName.prefix(14)) : "\(portalBadges.count) portals"
+            let key = (zoom, title, first.colorIndex)
+            if !liveZoom, portalSymbolKey != key {
+                portalSymbolKey = key
+                effectiveAppearance.performAsCurrentDrawingAppearance {
+                    portalButton.attributedTitle = NSAttributedString(string: " " + title, attributes: [
+                        .font: NSFont.systemFont(ofSize: 11 * zoom, weight: .semibold), .foregroundColor: Theme.text2])
+                    let img = NSImage(systemSymbolName: "hurricane", accessibilityDescription: nil)
+                        ?? NSImage(systemSymbolName: "circle.circle", accessibilityDescription: nil)
+                    portalButton.image = img?.withSymbolConfiguration(.init(pointSize: 11 * zoom, weight: .semibold))
+                    portalButton.contentTintColor = first.color
+                    portalButton.layer?.backgroundColor = Theme.pill.cgColor
+                }
+            }
+            let tw = ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold)]).width)
+            let pw = (30 + tw) * zoom
+            portalButton.frame = NSRect(x: metaRight - pw, y: (h - 22 * zoom) / 2, width: pw, height: 22 * zoom)
+            portalButton.layer?.cornerRadius = 11 * zoom
+            metaRight = portalButton.frame.minX - 8 * zoom
+        }
         // Center each label on its real line height (a fixed box puts the text high).
         func centered(_ f: NSTextField, x: CGFloat, w: CGFloat) -> NSRect {
             let lh = ceil(f.intrinsicContentSize.height)
@@ -402,6 +499,7 @@ final class TileView: NSView {
         statusCard.layer?.cornerRadius = r
 
         connector.frame = CGRect(x: b.width - 6, y: b.height / 2 - 6, width: 12, height: 12)
+        if !portalRing.isHidden { portalRing.place(center: ringPoint, zoom: zoom) }
         CATransaction.commit()
     }
 
@@ -688,6 +786,9 @@ final class StatusCardView: NSView {
     /// pill is its own layer and the label is centered inside it.
     private let chipPill = CALayer()
     private var state: AgentState = .idle
+    private var footerText = ""
+    /// Portal ends: "◎ board" before the branch, in the far board's color.
+    var portals: [PortalBadge] = [] { didSet { if oldValue != portals { renderFooter() } } }
 
     override var isFlipped: Bool { true }
 
@@ -720,13 +821,28 @@ final class StatusCardView: NSView {
         if let b = tile.branch { f.append(b) }
         if let a = tile.diffAdded, a > 0 { f.append("+\(a)") }
         if let r = tile.diffRemoved, r > 0 { f.append("−\(r)") }
-        footer.stringValue = f.joined(separator: "  ")
+        footerText = f.joined(separator: "  ")
+        renderFooter()
         chip.stringValue = tile.state == .idle ? "" : "\(tile.state.label) · \(tile.stateSince.elapsedShort)"
         updateColors()
         needsLayout = true
     }
 
-    override func viewDidChangeEffectiveAppearance() { updateColors() }
+    private func renderFooter() {
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let s = NSMutableAttributedString()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            if let p = portals.first {
+                let label = portals.count == 1 ? "◎ \(p.boardName)" : "◎ \(portals.count) boards"
+                s.append(NSAttributedString(string: label, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: p.color]))
+                if !footerText.isEmpty { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
+            }
+            s.append(NSAttributedString(string: footerText, attributes: [.font: font, .foregroundColor: Theme.text3]))
+        }
+        footer.attributedStringValue = s
+    }
+
+    override func viewDidChangeEffectiveAppearance() { updateColors(); renderFooter() }
 
     private func updateColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {

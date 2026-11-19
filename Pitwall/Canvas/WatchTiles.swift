@@ -196,8 +196,8 @@ extension CanvasController {
     }
 
     private func near(agent id: String) -> CGPoint? {
-        guard let f = board.tile(id) else { return nil }
-        return freeSpot(size: Self.defaultSize(.logs), near: CGPoint(x: f.frame.maxX + 44, y: f.frame.minY))
+        guard let (b, f) = store.findTile(id) else { return nil }
+        return Self.freeSpot(in: b, size: Self.defaultSize(.logs), near: CGPoint(x: f.frame.maxX + 44, y: f.frame.minY))
     }
 
     /// A command wait ended: tell the agent how it went so it can carry on.
@@ -318,7 +318,7 @@ extension CanvasController {
         let tail = Sessions.plain(raw).split(separator: "\n", omittingEmptySubsequences: false).suffix(80).joined(separator: "\n")
         let cmd = t.watchCommand ?? t.command ?? "the command"
         let text = "`\(cmd)` is failing in \(t.cwd ?? "the project"). Please fix it; Pitwall will run it again when you're done (no need to reply). Last output:\n```\n\(tail)\n```"
-        if let err = sendMessage(from: id, to: agent, text: text) {
+        if let err = messageError(from: id, to: agent, text: text) {
             model?.toast(.init(kind: .error, title: "Couldn't send", body: err, tileID: id))
         } else {
             Timelines.shared.add(agent, .message, "Failure from \(t.displayName)")
@@ -345,8 +345,8 @@ extension CanvasController {
         t.prRef = ref
         t.branch = Git.branch(top)
         var spot = at
-        if spot == nil, let f = from.flatMap({ board.tile($0) }) {
-            spot = freeSpot(size: Self.defaultSize(.pr), near: CGPoint(x: f.frame.maxX + 44, y: f.frame.minY))
+        if spot == nil, let (b, f) = from.flatMap({ store.findTile($0) }) {
+            spot = Self.freeSpot(in: b, size: Self.defaultSize(.pr), near: CGPoint(x: f.frame.maxX + 44, y: f.frame.minY))
         }
         let id = addTile(t, at: spot)
         if let from { addLink(from: from, to: id, kind: .spawned) }
@@ -409,7 +409,7 @@ extension CanvasController {
             }
             let text = "CI is failing on PR #\(pr.number) (\(pr.title)). Please fix and push.\n\n" + parts.joined(separator: "\n\n")
             DispatchQueue.main.async {
-                if let err = self.sendMessage(from: id, to: agent, text: text) {
+                if let err = self.messageError(from: id, to: agent, text: text) {
                     self.model?.toast(.init(kind: .error, title: "Couldn't send", body: err, tileID: id))
                 }
             }
@@ -444,7 +444,7 @@ extension CanvasController {
             "- \(c.author)\(c.path.map { " on \($0)" } ?? ""): \(c.body)"
         }.joined(separator: "\n")
         let text = "Review feedback on \(t.displayName). Address it, then push:\n\(body)"
-        if let err = sendMessage(from: id, to: agent, text: text) {
+        if let err = messageError(from: id, to: agent, text: text) {
             model?.toast(.init(kind: .error, title: "Couldn't send", body: err, tileID: id))
         }
     }

@@ -197,10 +197,11 @@ extension CanvasController {
     /// Opens a host terminal running `claude remote-control` for a folder.
     @discardableResult
     func startRemoteControl(cwd: String? = nil, worktree: Bool = false, at: CGPoint? = nil) -> String {
-        let dir = cwd ?? board.root ?? defaultCwd
+        let b = targetBoard
+        let dir = cwd ?? b.root ?? defaultCwd
         // Remote Control refuses worktree mode outside a git repository.
         let worktree = worktree && Git.toplevel(dir) != nil
-        let name = board.name + " · " + (dir as NSString).lastPathComponent
+        let name = b.name + " · " + (dir as NSString).lastPathComponent
         var t = Tile(kind: .terminal, frame: CGRect(origin: .zero, size: CGSize(width: 440, height: 616)))
         t.cwd = dir
         t.command = Self.remoteControlCommand(name: name, worktree: worktree)
@@ -322,6 +323,11 @@ extension CanvasController {
             r.origin.x += 44
             if tries % 16 == 15 { r.origin.x = p.x; r.origin.y += 88 }
             tries += 1
+        }
+        // Still on top of something (big tiles around the start): go past
+        // the rightmost tile on that row, which is always free.
+        if others.contains(where: { $0.intersects(r) }) {
+            r.origin = CGPoint(x: (others.map(\.maxX).max() ?? p.x) + 24, y: p.y)
         }
         return CanvasView.snap(r.origin)
     }

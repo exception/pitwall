@@ -26,6 +26,8 @@ enum PitwallPaths {
 
     static var boardsDir: URL { support.appendingPathComponent("boards", isDirectory: true) }
     static var stateFile: URL { support.appendingPathComponent("state.json") }
+    /// Cross-board agent connections.
+    static var portalsFile: URL { support.appendingPathComponent("portals.json") }
     static var terminalConfig: URL { support.appendingPathComponent("terminal.ghostty") }
     static var daemonLog: URL { support.appendingPathComponent("daemon.log") }
     static var hooksSettings: URL { support.appendingPathComponent("claude-hooks.json") }

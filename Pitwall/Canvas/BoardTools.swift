@@ -9,13 +9,13 @@ extension CanvasController {
 
     @discardableResult
     func saveLayout(name: String) -> SavedLayout {
-        let b = board
+        let b = targetBoard
         var l = SavedLayout(name: name,
                             tiles: Dictionary(uniqueKeysWithValues: b.tiles.map { ($0.id, $0.frame) }),
                             frames: Dictionary(uniqueKeysWithValues: b.frames.map { ($0.id, $0.frame) }),
                             collapsed: b.frames.filter(\.collapsed).map(\.id),
-                            viewport: canvas.viewport)
-        store.update { bb in
+                            viewport: b.id == board.id ? canvas.viewport : b.viewport)
+        store.update(b.id) { bb in
             var list = bb.layouts ?? []
             // Saving under an existing name replaces it.
             if let i = list.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
@@ -26,26 +26,31 @@ extension CanvasController {
             }
             bb.layouts = list
         }
-        model?.toast(.init(kind: .info, title: "Layout saved", body: "“\(name)” · \(l.tiles.count) tiles"))
+        if !quietCreation { model?.toast(.init(kind: .info, title: "Layout saved", body: "“\(name)” · \(l.tiles.count) tiles")) }
         return l
     }
 
     /// Moves tiles back to where the layout had them. Tiles added since then
     /// stay where they are; tiles that are gone are skipped.
     func restoreLayout(_ id: String) {
-        guard let l = board.layouts?.first(where: { $0.id == id }) else { return }
-        if fullScreenTileID != nil { exitFullScreen() }
-        store.update { b in
+        let tb = targetBoard
+        guard let l = tb.layouts?.first(where: { $0.id == id }) else { return }
+        let onScreen = tb.id == board.id
+        if onScreen && fullScreenTileID != nil && !quietCreation { exitFullScreen() }
+        store.update(tb.id) { b in
+            // Off screen (or an agent asked): the saved view applies, without moving the camera.
+            if !onScreen { b.viewport = l.viewport }
             for i in b.tiles.indices { if let f = l.tiles[b.tiles[i].id] { b.tiles[i].frame = f } }
             for i in b.frames.indices {
                 if let f = l.frames[b.frames[i].id] { b.frames[i].frame = f }
                 b.frames[i].collapsed = l.collapsed.contains(b.frames[i].id)
             }
         }
+        layoutSubagents()
+        guard onScreen else { return }
         reconcile()
         animateLayout()
-        layoutSubagents()
-        canvas.animate(to: l.viewport)
+        if !quietCreation { canvas.animate(to: l.viewport) }
     }
 
     func deleteLayout(_ id: String) {

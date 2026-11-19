@@ -215,6 +215,8 @@ struct SettingsView: View {
                 Divider()
                 Row("Sub-agent tiles", "Show Claude's sub-agents as small linked tiles.") { Toggle("", isOn: $prefs.showSubagents).labelsHidden().toggleStyle(.switch) }
                 Divider()
+                Row("Agents can open portals", "Let agents start or reach an agent on another board (another repo) with open_portal. You can always open one from a tile's menu.") { Toggle("", isOn: $prefs.agentPortals).labelsHidden().toggleStyle(.switch) }
+                Divider()
                 Row("Show spend", "What each agent has cost so far, on its tile and in the board's total.") { Toggle("", isOn: $prefs.showCost).labelsHidden().toggleStyle(.switch) }
             }
         }

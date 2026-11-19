@@ -10,9 +10,12 @@ final class Store: ObservableObject {
     @Published var currentBoardID: String = ""
     /// Messages waiting to be delivered to a tile's agent.
     @Published var inbox: [String: [AgentMessage]] = [:]
+    /// Agent ↔ agent connections across boards (saved to portals.json).
+    @Published private(set) var portals: [Portal] = []
 
     private var saveWork: DispatchWorkItem?
     private struct AppState: Codable { var currentBoardID: String; var order: [String] }
+    private struct PortalsFile: Codable { var version = 1; var portals: [Portal] }
 
     private init() {
         load()
@@ -47,11 +50,11 @@ final class Store: ObservableObject {
         return nil
     }
 
-    func addBoard(name: String, root: String?) -> Board {
+    func addBoard(name: String, root: String?, switchTo: Bool = true) -> Board {
         var b = Board(name: name, root: root)
         b.colorIndex = boards.count % Theme.boardColors.count
         boards.append(b)
-        currentBoardID = b.id
+        if switchTo { currentBoardID = b.id }
         scheduleSave()
         return b
     }
@@ -59,10 +62,40 @@ final class Store: ObservableObject {
     func removeBoard(_ id: String) {
         guard boards.count > 1 else { return }
         boards.removeAll { $0.id == id }
+        portals.removeAll { $0.a.boardID == id || $0.b.boardID == id }
         if currentBoardID == id { currentBoardID = boards[0].id }
         try? FileManager.default.removeItem(at: PitwallPaths.boardsDir.appendingPathComponent("\(id).json"))
         scheduleSave()
     }
+
+    // MARK: Portals
+
+    /// Adds a portal unless the pair is already connected (either way round).
+    @discardableResult
+    func addPortal(_ p: Portal) -> (portal: Portal, created: Bool) {
+        if let existing = portals.first(where: { $0.key == p.key }) { return (existing, false) }
+        portals.append(p)
+        scheduleSave()
+        return (p, true)
+    }
+
+    @discardableResult
+    func removePortals(where match: (Portal) -> Bool) -> [Portal] {
+        let gone = portals.filter(match)
+        guard !gone.isEmpty else { return [] }
+        portals.removeAll(where: match)
+        scheduleSave()
+        return gone
+    }
+
+    func updatePortal(_ id: String, _ change: (inout Portal) -> Void) {
+        guard let i = portals.firstIndex(where: { $0.id == id }) else { return }
+        change(&portals[i])
+        scheduleSave()
+    }
+
+    func portal(_ id: String) -> Portal? { portals.first { $0.id == id } }
+    func portals(of tileID: String) -> [Portal] { portals.filter { $0.involves(tileID) } }
 
     // MARK: Persistence
 
@@ -93,6 +126,9 @@ final class Store: ObservableObject {
             loaded = [Board(name: "Home", root: home)]
         }
         boards = loaded
+        if let d = try? Data(contentsOf: PitwallPaths.portalsFile), let f = try? Wire.decoder.decode(PortalsFile.self, from: d) {
+            portals = Portals.pruned(f.portals, boards: loaded)
+        }
         currentBoardID = state.flatMap { s in loaded.contains { $0.id == s.currentBoardID } ? s.currentBoardID : nil } ?? loaded[0].id
     }
 
@@ -111,6 +147,9 @@ final class Store: ObservableObject {
             if let d = try? enc.encode(b) {
                 try? d.write(to: PitwallPaths.boardsDir.appendingPathComponent("\(b.id).json"), options: .atomic)
             }
+        }
+        if let d = try? enc.encode(PortalsFile(portals: portals)) {
+            try? d.write(to: PitwallPaths.portalsFile, options: .atomic)
         }
         if let d = try? enc.encode(AppState(currentBoardID: currentBoardID, order: boards.map(\.id))) {
             try? d.write(to: PitwallPaths.stateFile, options: .atomic)

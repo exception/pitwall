@@ -45,6 +45,7 @@ extension CanvasController {
     /// A free spot inside a frame (left-to-right, top-to-bottom), or just to
     /// the right of its tiles; the frame grows to fit afterwards.
     func spot(in frameID: String, size: CGSize) -> CGPoint {
+        let board = targetBoard
         guard let f = board.frames.first(where: { $0.id == frameID }) else { return freeSpot(size: size) }
         let others = board.tiles.filter { $0.kind != .subagent }.map { $0.frame.insetBy(dx: -20, dy: -20) }
         let pad = Self.framePad
@@ -119,7 +120,9 @@ extension CanvasController {
     // MARK: Collapse
 
     func setCollapsed(_ id: String, _ collapsed: Bool) {
-        store.update { b in if let i = b.frames.firstIndex(where: { $0.id == id }) { b.frames[i].collapsed = collapsed } }
+        let owner = store.boards.first { $0.frames.contains { $0.id == id } }?.id ?? board.id
+        store.update(owner) { b in if let i = b.frames.firstIndex(where: { $0.id == id }) { b.frames[i].collapsed = collapsed } }
+        guard owner == board.id else { return }
         if collapsed, let f = focusedTileID, board.tile(f)?.frameGroupID == id { clearFocus() }
         reconcile()
         NSAnimationContext.runAnimationGroup { ctx in

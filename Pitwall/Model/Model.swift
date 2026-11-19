@@ -164,6 +164,36 @@ struct Link: Codable, Identifiable, Equatable {
     var isHandoff: Bool { handoff == true }
 }
 
+/// One end of a portal: an agent tile on some board.
+struct PortalEnd: Codable, Equatable, Hashable {
+    /// Cache of the tile's board; the source of truth is `Store.findTile`.
+    var boardID: String
+    var tileID: String
+}
+
+/// A connection between two agent tiles on different boards. Lives in
+/// `portals.json`, not in either board, so closing tiles on one board can
+/// never silently drop it.
+struct Portal: Codable, Identifiable, Equatable {
+    var id: String = "p-" + UUID().uuidString.prefix(8).lowercased()
+    /// The opener.
+    var a: PortalEnd
+    /// The far side (spawned or connected).
+    var b: PortalEnd
+    var createdAt = Date()
+    /// Last message through it (drives the vortex spin and emerge animation).
+    var lastActivity: Date?
+    var lastSender: String?
+    /// "user" (the in-app menu) or "agent" (anything through the control socket).
+    var openedBy: String?
+    var task: String?
+
+    func involves(_ tileID: String) -> Bool { a.tileID == tileID || b.tileID == tileID }
+    func other(_ tileID: String) -> PortalEnd? { a.tileID == tileID ? b : (b.tileID == tileID ? a : nil) }
+    func end(_ tileID: String) -> PortalEnd? { a.tileID == tileID ? a : (b.tileID == tileID ? b : nil) }
+    var key: Set<String> { [a.tileID, b.tileID] }
+}
+
 /// A labeled group of tiles.
 struct FrameGroup: Codable, Identifiable, Equatable {
     var id: String = "f-" + UUID().uuidString.prefix(8).lowercased()

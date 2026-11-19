@@ -163,51 +163,88 @@ final class ControlServer {
         let store = ctl.store
         // Place new tiles next to the tile that asked, on its board.
         func near(_ id: String?) -> CGPoint? {
-            guard let id, let t = ctl.board.tile(id) else { return nil }
-            return ctl.freeSpot(size: CanvasController.defaultSize(.terminal), near: CGPoint(x: t.frame.maxX + 44, y: t.frame.minY))
+            guard let id, let (b, t) = store.findTile(id) else { return nil }
+            return CanvasController.freeSpot(in: b, size: CanvasController.defaultSize(.terminal), near: CGPoint(x: t.frame.maxX + 44, y: t.frame.minY))
         }
-        func ensureBoard(of id: String?) {
-            if let id, let (b, _) = store.findTile(id), b.id != store.currentBoardID { ctl.switchBoard(b.id) }
+        /// The asking tile's board (nil for the plain CLI: the current board).
+        func callerBoard(_ id: String?) -> String? { id.flatMap { store.findTile($0)?.board.id } }
+        /// Agents never move the user's view: their tiles land on their own
+        /// board, without flying the camera or taking focus.
+        func onCallerBoard<T>(_ body: () -> T) -> T { ctl.creating(on: callerBoard(from), quiet: from != nil, body) }
+        /// The board a request acts on: the caller's, else the current one.
+        var actBoard: Board { callerBoard(from).flatMap { store.board($0) } ?? ctl.board }
+        func isAgentCaller(_ id: String?) -> Bool {
+            guard let id, let t = store.findTile(id)?.tile else { return false }
+            return Portals.isAgent(t, hooked: ctl.hookedTiles)
         }
 
         switch req.cmd {
         case "tile.list":
-            let b = req.boardID.flatMap { store.board($0) } ?? store.current
+            let b: Board
+            if let q = args["board"], !q.isEmpty {
+                switch Portals.board(q, in: store.boards) {
+                case .success(let x): b = x
+                case .failure(let e): return fail(e.message)
+                }
+            } else {
+                b = req.boardID.flatMap { store.board($0) } ?? store.current
+            }
             return ok(.array(b.tiles.map(describe)))
 
+        case "board.list":
+            let mine = callerBoard(from)
+            return ok(.array(store.boards.map { b in
+                var o: [String: JSONValue] = [
+                    "id": .string(b.id), "name": .string(b.name),
+                    "current": .bool(b.id == store.currentBoardID), "yours": .bool(b.id == mine),
+                    "agents": .number(Double(b.tiles.filter { Portals.isAgent($0, hooked: ctl.hookedTiles) }.count)),
+                    "portals": .number(Double(store.portals.filter { $0.a.boardID == b.id || $0.b.boardID == b.id }.count)),
+                ]
+                if let r = b.root { o["root"] = .string(r) }
+                let v = b.id == store.currentBoardID ? ctl.canvas.viewport : b.viewport
+                o["viewport"] = .string("\(Int(v.origin.x)),\(Int(v.origin.y)),\(String(format: "%.3f", v.zoom))")
+                if b.id == store.currentBoardID, let f = ctl.focusedTileID { o["focused"] = .string(f) }
+                return .object(o)
+            }))
+
         case "tile.new":
-            ensureBoard(of: from)
             let cmd = args["command"]
-            if let fid = args["frame"] { ctl.pendingPlacement = (nil, fid, Date().addingTimeInterval(5)) }
-            let id = ctl.newTerminal(cwd: args["cwd"], command: cmd, at: near(from), name: args["title"])
+            var at = near(from)
+            if let fid = args["frame"] {
+                let b = actBoard
+                if b.id == store.currentBoardID && from == nil { ctl.pendingPlacement = (nil, fid, Date().addingTimeInterval(5)); at = nil }
+                else if b.frames.contains(where: { $0.id == fid }) { at = ctl.creating(on: b.id, quiet: true) { ctl.spot(in: fid, size: CanvasController.defaultSize(.terminal)) } }
+            }
+            let id = onCallerBoard { ctl.newTerminal(cwd: args["cwd"], command: cmd, at: at, name: args["title"]) }
             if let from { ctl.addLink(from: from, to: id, kind: .spawned) }
             return ok(.string(id))
 
         case "agent.new":
-            ensureBoard(of: from)
             let agent = AgentKind(rawValue: args["agent"] ?? "claude") ?? .claude
-            let before = Set(store.current.tiles.map(\.id))
             if let n = Int(args["count"] ?? ""), n > 1 {
-                ctl.fanOut(task: args["task"] ?? "", repo: args["cwd"], agent: agent, count: min(n, 5))
-                return ok(.string(store.current.tiles.filter { !before.contains($0.id) }.map(\.id).joined(separator: ",")))
+                let ids = onCallerBoard { ctl.fanOut(task: args["task"] ?? "", repo: args["cwd"], agent: agent, count: min(n, 5)) }
+                return ok(.string(ids.joined(separator: ",")))
             }
-            ctl.newAgent(task: args["task"] ?? "", repo: args["cwd"], worktree: args["worktree"] == "1",
-                         agent: agent, at: near(from), parent: from)
-            let id = store.current.tiles.first { !before.contains($0.id) }?.id ?? ""
+            let id = onCallerBoard {
+                ctl.newAgent(task: args["task"] ?? "", repo: args["cwd"], worktree: args["worktree"] == "1",
+                             agent: agent, at: near(from), parent: from)
+            }
             return ok(.string(id))
 
         case "tile.diff":
-            ensureBoard(of: from)
-            let before = Set(store.current.tiles.map(\.id))
-            if let from { ctl.newDiff(for: from) } else {
+            let id: String?
+            if let from { id = onCallerBoard { ctl.newDiff(for: from) } } else {
                 guard let dir = args["cwd"], Git.toplevel(dir) != nil else { return fail("not a git repository") }
-                ctl.newDiff(at: nil, repo: dir)
+                id = ctl.newDiff(at: nil, repo: dir)
             }
-            return ok(.string(store.current.tiles.first { !before.contains($0.id) }?.id ?? ""))
+            return ok(.string(id ?? ""))
 
         case "link.add":
-            guard let a = req.tileID, let b = args["to"], store.findTile(a) != nil, store.findTile(b) != nil else {
+            guard let a = req.tileID, let b = args["to"], let ta = store.findTile(a), let tb = store.findTile(b) else {
                 return fail("both tiles must exist")
+            }
+            guard ta.board.id == tb.board.id else {
+                return fail("those tiles are on different boards; connect them with a portal: pitwall portal \(tb.board.name) --to \(b) (agents: open_portal)")
             }
             ctl.addLink(from: a, to: b)
             if args["handoff"] == "1", let l = store.findTile(a)?.board.links.first(where: { $0.from == a && $0.to == b }) {
@@ -217,8 +254,7 @@ final class ControlServer {
 
         case "tile.watch":
             guard let cmd = args["command"], !cmd.isEmpty else { return fail("command required") }
-            ensureBoard(of: from)
-            let id = ctl.newWatch(command: cmd, cwd: args["cwd"], at: near(from), from: from, autoSend: args["autosend"] == "1")
+            let id = onCallerBoard { ctl.newWatch(command: cmd, cwd: args["cwd"], at: near(from), from: from, autoSend: args["autosend"] == "1") }
             return ok(.string(id))
 
         case "tile.wait":
@@ -227,9 +263,10 @@ final class ControlServer {
             guard let spec = CanvasController.waitSpec(run: args["run"], pr: args["pr"], command: args["command"], repo: repo) else {
                 return fail("give one of: run (a GitHub Actions run id or URL), pr (number or URL), or command")
             }
-            ensureBoard(of: from)
-            let id = spec.runID.map { ctl.newRunWait(runID: $0, repo: spec.runRepo, note: args["then"], cwd: cwd, from: from) }
-                ?? ctl.newWait(spec, note: args["then"], cwd: cwd, from: from)
+            let id = onCallerBoard {
+                spec.runID.map { ctl.newRunWait(runID: $0, repo: spec.runRepo, note: args["then"], cwd: cwd, from: from) }
+                    ?? ctl.newWait(spec, note: args["then"], cwd: cwd, from: from)
+            }
             let wake = from == nil ? "" : " When it finishes (success or failure) Pitwall will send you the result as a new message."
             let how = spec.runID == nil ? " (`\(spec.command)`)" : " (a live Run tile)"
             return ok(.string("Waiting on \(spec.label) in tile \(id)\(how).\(wake) End your turn now instead of polling; don't run gh run watch, sleep or polling loops yourself."))
@@ -240,13 +277,11 @@ final class ControlServer {
             return ok()
 
         case "rc.start":
-            ensureBoard(of: from)
-            return ok(.string(ctl.startRemoteControl(cwd: args["cwd"], worktree: args["worktree"] == "1", at: near(from))))
+            return ok(.string(onCallerBoard { ctl.startRemoteControl(cwd: args["cwd"], worktree: args["worktree"] == "1", at: near(from)) }))
 
         case "tile.server":
             guard let cmd = args["command"], !cmd.isEmpty else { return fail("command required") }
-            ensureBoard(of: from)
-            return ok(.string(ctl.newServer(command: cmd, cwd: args["cwd"], at: near(from), from: from)))
+            return ok(.string(onCallerBoard { ctl.newServer(command: cmd, cwd: args["cwd"], at: near(from), from: from) }))
 
         case "view":
             Self.stayResponsive(for: (Double(args["duration"] ?? "") ?? 0.32) + 2)
@@ -350,8 +385,10 @@ final class ControlServer {
 
         case "board.new":
             guard let name = args["name"], !name.isEmpty else { return fail("name required") }
-            let b = store.addBoard(name: name, root: args["root"])
-            ctl.switchBoard(b.id)
+            // An agent adding a board doesn't take the user there.
+            let prev = store.currentBoardID
+            let b = store.addBoard(name: name, root: args["root"], switchTo: false)
+            if from == nil { store.currentBoardID = prev; ctl.switchBoard(b.id) } else { ctl.model?.objectWillChange.send() }
             return ok(.string(b.id))
 
         case "board.switch":
@@ -363,24 +400,27 @@ final class ControlServer {
 
         case "frame.new":
             let ids = (args["tiles"] ?? "").split(separator: ",").map(String.init).filter { store.findTile($0) != nil }
-            let before = Set(ctl.board.frames.map(\.id))
-            ctl.newFrame(around: ids.isEmpty ? nil : ids, prompt: false)
-            guard let f = ctl.board.frames.first(where: { !before.contains($0.id) }) else { return fail("couldn't create frame") }
-            if let t = args["title"], !t.isEmpty {
-                store.update { b in if let i = b.frames.firstIndex(where: { $0.id == f.id }) { b.frames[i].title = t } }
+            let owners = Set(ids.compactMap { store.findTile($0)?.board.id })
+            guard owners.count <= 1 else { return fail("tiles are on different boards") }
+            let bid = owners.first ?? callerBoard(from)
+            let fid = ctl.creating(on: bid, quiet: from != nil) { ctl.newFrame(around: ids.isEmpty ? nil : ids, prompt: false) }
+            let owner = store.boards.first { $0.frames.contains { $0.id == fid } }?.id
+            if let t = args["title"], !t.isEmpty, let owner {
+                store.update(owner) { b in if let i = b.frames.firstIndex(where: { $0.id == fid }) { b.frames[i].title = t } }
                 ctl.reconcile()
             }
-            return ok(.string(f.id))
+            return ok(.string(fid))
 
         case "frame.list":
-            return ok(.array(ctl.board.frames.map { f in
+            let b = actBoard
+            return ok(.array(b.frames.map { f in
                 .object(["id": .string(f.id), "title": .string(f.title), "collapsed": .bool(f.collapsed),
                          "frame": .string([f.frame.minX, f.frame.minY, f.frame.width, f.frame.height].map { String(Int($0)) }.joined(separator: ",")),
-                         "members": .string(ctl.board.members(of: f.id).map(\.id).joined(separator: ","))])
+                         "members": .string(b.members(of: f.id).map(\.id).joined(separator: ","))])
             }))
 
         case "frame.collapse", "frame.expand":
-            guard let id = args["id"], ctl.board.frames.contains(where: { $0.id == id }) else { return fail("no such frame") }
+            guard let id = args["id"], store.boards.contains(where: { $0.frames.contains { $0.id == id } }) else { return fail("no such frame") }
             ctl.setCollapsed(id, req.cmd == "frame.collapse")
             return ok()
 
@@ -393,44 +433,47 @@ final class ControlServer {
 
         case "layout.save":
             guard let name = args["name"], !name.isEmpty else { return fail("name required") }
-            return ok(.string(ctl.saveLayout(name: name).id))
+            return ok(.string(onCallerBoard { ctl.saveLayout(name: name).id }))
 
         case "layout.restore":
-            guard let name = args["name"], let l = ctl.board.layouts?.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame || $0.id == name }) else {
+            guard let name = args["name"], let l = actBoard.layouts?.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame || $0.id == name }) else {
                 return fail("no layout named \(args["name"] ?? "")")
             }
-            ctl.restoreLayout(l.id)
+            onCallerBoard { ctl.restoreLayout(l.id) }
             return ok()
 
         case "layout.list":
-            return ok(.array((ctl.board.layouts ?? []).map { .object(["id": .string($0.id), "name": .string($0.name), "tiles": .string(String($0.tiles.count))]) }))
+            return ok(.array((actBoard.layouts ?? []).map { .object(["id": .string($0.id), "name": .string($0.name), "tiles": .string(String($0.tiles.count))]) }))
 
         case "search":
             // The scan happens off-main below; this just snapshots the tiles.
             return fail("internal")
 
         case "tile.pr":
-            ensureBoard(of: from)
             let repo = args["cwd"] ?? from.flatMap { store.findTile($0)?.tile.cwd } ?? ctl.defaultCwd
-            guard let id = ctl.newPR(repo: repo, ref: args["ref"].flatMap { $0.isEmpty ? nil : $0 }, from: from) else { return fail("not a git repository: \(repo)") }
+            guard let id = onCallerBoard({ ctl.newPR(repo: repo, ref: args["ref"].flatMap { $0.isEmpty ? nil : $0 }, from: from) }) else { return fail("not a git repository: \(repo)") }
             if let from, store.findTile(from)?.tile.kind == .agent { ctl.addLink(from: id, to: from) }
+            if args["explain"] == "1", let b = store.findTile(id)?.board, b.id != store.currentBoardID {
+                return ok(.string("\(id) (on board \(b.name); it starts checking CI when that board is opened. For a background CI wait use wait_for pr)"))
+            }
             return ok(.string(id))
 
         case "tile.open":
             guard let target = args["target"], !target.isEmpty else { return fail("target required") }
-            ensureBoard(of: from)
-            guard let id = ctl.open(target: target, at: near(from)) else { return fail("couldn't open \(target)") }
+            guard let id = onCallerBoard({ ctl.open(target: target, at: near(from)) }) else { return fail("couldn't open \(target)") }
             if let from { ctl.addLink(from: from, to: id, kind: .spawned) }
             return ok(.string(id))
 
         case "tile.close":
             guard let id = req.tileID, store.findTile(id) != nil else { return fail("no such tile") }
-            ctl.closeTile(id)
+            // A shell tile running `pitwall tile close` is the user, not an agent.
+            ctl.closeTile(id, by: isAgentCaller(from) && from != id ? .agent(from!) : .user)
             return ok()
 
         case "tile.focus":
-            guard let id = req.tileID, store.findTile(id) != nil else { return fail("no such tile") }
-            ensureBoard(of: id)
+            guard let id = req.tileID, let (b, _) = store.findTile(id) else { return fail("no such tile") }
+            // The one command that moves the view: it asks to show a tile.
+            if b.id != store.currentBoardID { ctl.switchBoard(b.id) }
             ctl.flyTo(tileID: id, fill: false)
             return ok()
 
@@ -442,7 +485,12 @@ final class ControlServer {
             return ok(.string(Sessions.plain(text)))
 
         case "tile.send":
-            guard let id = req.tileID, let s = ctl.surface(for: id) else { return fail("no live terminal with that id on this board") }
+            guard let id = req.tileID else { return fail("tile id required") }
+            guard let s = ctl.surface(for: id) else {
+                // Not on screen: type it into the session directly.
+                if let err = ctl.typeInto(id, chunks: Sessions.textChunks(args["text"] ?? "")) { return fail(err) }
+                return ok()
+            }
             // Text is pasted; line breaks become Return key presses.
             let text = (args["text"] ?? "").replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
             let parts = text.components(separatedBy: "\n")
@@ -452,7 +500,16 @@ final class ControlServer {
             return ok()
 
         case "tile.key":
-            guard let id = req.tileID, let s = ctl.surface(for: id) else { return fail("no live terminal with that id on this board") }
+            guard let id = req.tileID else { return fail("tile id required") }
+            guard let s = ctl.surface(for: id) else {
+                var bytes = Data()
+                for k in (args["keys"] ?? "").split(separator: " ") {
+                    guard let b = Sessions.keyBytes[k.lowercased()] else { return fail("unknown key \(k); use up/down/left/right/return/escape/tab/space") }
+                    bytes += Data(b.utf8)
+                }
+                if let err = ctl.typeInto(id, chunks: [(bytes, 50_000)]) { return fail(err) }
+                return ok()
+            }
             for k in (args["keys"] ?? "").split(separator: " ") {
                 guard s.press(key: String(k)) else { return fail("unknown key \(k); use up/down/left/right/return/escape/tab/space") }
             }
@@ -492,12 +549,73 @@ final class ControlServer {
                 }
                 return d
             }
-            return ok(.array(list))
+            let peers = Portals.peers(of: id, boards: store.boards, portals: store.portals).map { p -> JSONValue in
+                var d = describe(p.tile)
+                if case .object(var o) = d {
+                    o["relation"] = .string("portal")
+                    o["board"] = .string(p.board.name)
+                    o["board_id"] = .string(p.board.id)
+                    o["portal_id"] = .string(p.portal.id)
+                    d = .object(o)
+                }
+                return d
+            }
+            return ok(.array(list + peers))
 
         case "link.send":
             guard let from, let to = req.tileID else { return fail("tile_id required") }
-            if let err = ctl.sendMessage(from: from, to: to, text: args["text"] ?? "") { return fail(err) }
-            return ok(.string("delivered"))
+            switch ctl.sendMessage(from: from, to: to, text: args["text"] ?? "") {
+            case .failure(let e): return fail(e.message)
+            case .success(let d): return ok(.string(d.text))
+            }
+
+        case "portal.open":
+            guard let src = from ?? args["source"] else { return fail("run this inside a Pitwall tile") }
+            guard let q = args["board"], !q.isEmpty else { return fail("board required") }
+            let agent = AgentKind(rawValue: args["agent"] ?? "claude") ?? .claude
+            // Anything through the socket is an agent: the Settings toggle and the rate limit apply.
+            switch ctl.openPortal(from: src, toBoard: q, task: args["task"], existing: args["to"].flatMap { $0.isEmpty ? nil : $0 },
+                                  worktree: args["worktree"] != "0", agent: agent, by: .agent) {
+            case .failure(let e): return fail(e.message)
+            case .success(let r):
+                var o: [String: JSONValue] = [
+                    "portal_id": .string(r.portal.id), "tile_id": .string(r.tile.id), "tile_name": .string(r.tile.displayName),
+                    "board_id": .string(r.board.id), "board": .string(r.board.name), "created": .bool(r.created),
+                    "task_sent": .bool(r.delivery != nil),
+                ]
+                if let c = store.findTile(r.tile.id)?.tile.cwd { o["cwd"] = .string(c) }
+                if let br = store.findTile(r.tile.id)?.tile.branch { o["branch"] = .string(br) }
+                if let d = r.delivery { o["delivery"] = .string(d.text) }
+                return ok(.object(o))
+            }
+
+        case "portal.list":
+            guard let src = from ?? args["source"] else { return fail("run this inside a Pitwall tile") }
+            return ok(.array(Portals.peers(of: src, boards: store.boards, portals: store.portals).map { p in
+                var o: [String: JSONValue] = [
+                    "portal_id": .string(p.portal.id), "tile_id": .string(p.tile.id), "tile_name": .string(p.tile.displayName),
+                    "board": .string(p.board.name), "board_id": .string(p.board.id), "state": .string(p.tile.state.rawValue),
+                ]
+                if let c = p.tile.cwd { o["cwd"] = .string(c) }
+                if let b = p.tile.branch { o["branch"] = .string(b) }
+                return .object(o)
+            }))
+
+        case "portal.close":
+            guard let src = from ?? args["source"] else { return fail("run this inside a Pitwall tile") }
+            let p: Portal
+            if let pid = args["portal"], !pid.isEmpty {
+                guard let x = store.portal(pid), x.involves(src) else { return fail("no portal \(pid)") }
+                p = x
+            } else if let to = args["to"], !to.isEmpty {
+                let pair: Set<String> = [src, to]
+                guard let x = store.portals.first(where: { $0.key == pair }) else { return fail("no portal between this tile and \(to)") }
+                p = x
+            } else {
+                return fail("give portal or to")
+            }
+            ctl.closePortal(p.id, by: isAgentCaller(src) ? .agent(src) : .user)
+            return ok(.string("closed"))
 
         case "link.inbox":
             guard let id = from ?? req.tileID else { return fail("run this inside a Pitwall tile") }

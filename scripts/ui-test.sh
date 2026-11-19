@@ -313,7 +313,75 @@ C
   stop_app
 }
 
-if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status background fullscreen approvals handoff watch boardtools frames bgoutput); fi
+# Portals: JSON helpers (python3, like the rest of this script).
+board_field() { $H board list | python3 -c "import json,sys; print(next((str(b.get('$2','')) for b in json.load(sys.stdin) if b['name']=='$1'), ''))"; }
+json_field() { python3 -c "import json,sys; print(json.load(sys.stdin).get('$1',''))"; }
+mcp_call() {  # mcp_call <as-tile> <tool> <json-args>
+  printf '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"%s","arguments":%s}}\n' "$2" "$3" | PITWALL_TILE_ID=$1 $H mcp
+}
+session_field() { $H sessions | python3 -c "import json,sys; print(next((str(s.get('$2')) for s in json.load(sys.stdin) if s['id']=='$1'), ''))"; }
+
+scenario_portal() {
+  echo "portal: agents on different boards connect without moving the view"
+  reset; start_app
+  local RA=$PWD/$OUT/repos/api RW=$PWD/$OUT/repos/web
+  rm -rf $OUT/repos; mkdir -p $RA $RW
+  for r in $RA $RW; do git -C $r init -q && git -C $r -c user.email=t@t -c user.name=t commit -q --allow-empty -m init; done
+  $H board new api --root $RA >/dev/null; $H board new web --root $RW >/dev/null   # plain CLI switches: ends on web
+  A=$($H tile new --cwd $RW --title "Web agent"); sleep 1
+  echo '{}' | PITWALL_TILE_ID=$A $H hook SessionStart
+  local V0=$(board_field web viewport)
+
+  # 1. From the board on screen: the far side is hidden, starts headless, view unchanged.
+  local R=$($H portal api "echo portal-ok; sleep 300" --from $A --agent shell)
+  F=$(echo $R | json_field tile_id); sleep 2.5
+  check "view stayed on web, viewport unchanged" '[[ $(board_field web current) == True && $(board_field web viewport) == $V0 ]]'
+  check "far tile is on api" '$H tile list --board api | grep -q $F'
+  check "far session alive without a terminal" '[[ $(session_field $F alive) == True && $(session_field $F attached) == False ]]'
+  check "it ran without being shown" '$H tile read $F | grep -q portal-ok'
+  check "list_links shows the portal" 'mcp_call $A list_links "{}" | grep -q "relation.*portal"'
+  check "open_terminal from the hidden tile stays off-board" '[[ -n $(mcp_call $F open_terminal "{\"title\":\"helper\"}" | grep -o "t-[0-9a-f]*") && $(board_field web current) == True ]]'
+  sleep 1; $H ui snapshot $PWD/$OUT/portal-src.png >/dev/null
+
+  # 2. A message, then an immediate jump: no cut-off paste, no dead terminal.
+  echo '{}' | PITWALL_TILE_ID=$F $H hook Stop
+  check "send_message through the portal is delivered" 'mcp_call $A send_message "{\"tile_id\":\"$F\",\"text\":\"echo via-portal\"}" | grep -q delivered'
+  $H board switch api >/dev/null; sleep 3
+  check "surface attached after the jump" '[[ $(session_field $F attached) == True && $(session_field $F alive) == True ]]'
+  check "delivered exactly once" '[[ $($H tile read $F | grep -c "via-portal") -ge 1 && $($H tile read $F | grep -o "Pitwall message" | wc -l | tr -d " ") == 1 ]]'
+  $H ui snapshot $PWD/$OUT/portal-far.png >/dev/null
+
+  # 3. An agent on a hidden board opens a portal INTO the board on screen.
+  B=$($H tile new --cwd $RA --title "Api agent"); sleep 1
+  echo '{}' | PITWALL_TILE_ID=$B $H hook SessionStart
+  $H board switch web >/dev/null; sleep 1
+  local V1=$(board_field web viewport) FOC1=$(board_field web focused)
+  local R2=$($H portal web "sleep 300" --from $B --agent shell); sleep 1.5
+  check "appeared on web; view and focus unchanged" '[[ $(board_field web viewport) == $V1 && $(board_field web focused) == $FOC1 ]] && $H tile list --board web | grep -q $(echo $R2 | json_field tile_id)'
+  $H ui snapshot $PWD/$OUT/portal-into-current.png >/dev/null
+
+  # 4. A server on the hidden board restarts headlessly.
+  rm -f $OUT/prun.txt
+  S=$(PITWALL_TILE_ID=$F $H server -- "echo run >> $PWD/$OUT/prun.txt; sleep 1; exit 1")
+  sleep 12
+  check "server is on hidden api" '$H tile list --board api | grep -q $S'
+  check "restarted headlessly at least twice ($(wc -l < $OUT/prun.txt 2>/dev/null | tr -d " ") runs)" '(( $(wc -l < $OUT/prun.txt) >= 2 ))'
+  check "view still on web" '[[ $(board_field web current) == True ]]'
+
+  # 5. Typing into a hidden terminal.
+  $H tile send $F "echo typed-offboard" >/dev/null; sleep 1.5
+  check "tile send reached the hidden tile" '$H tile read $F | grep -q typed-offboard'
+
+  # 6. Closing prunes; portals survive a restart.
+  $H tile close $F >/dev/null; sleep 0.5
+  check "portal pruned with its tile" '[[ $($H portals --from $A) == "[]" ]]'
+  $H portal api --to $B --from $A >/dev/null; sleep 1.2
+  stop_app; start_app
+  check "portals.json survives a restart" '$H portals --from $A | grep -q $B'
+  stop_app
+}
+
+if (( $# )); then scenarios=("$@"); else scenarios=(restore zoom status background fullscreen approvals handoff watch boardtools frames bgoutput portal); fi
 for s in $scenarios; do scenario_$s; done
 reset
 echo; [[ $FAILED == 0 ]] && echo "All UI scenarios passed. Screenshots: $OUT/" || { echo "Some UI scenarios FAILED. See $OUT/"; exit 1; }

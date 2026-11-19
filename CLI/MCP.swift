@@ -12,9 +12,39 @@ final class MCPServer {
 
     private lazy var tools: [Tool] = [
         Tool(name: "list_tiles",
-             description: "List the tiles on the Pitwall canvas board this agent runs in: id, kind, title, cwd, agent status, branch.",
+             description: "List the tiles on the Pitwall canvas board this agent runs in (or another board): id, kind, title, cwd, agent status, branch.",
+             schema: ["type": "object", "properties": [
+                "board": ["type": "string", "description": "Board id or name (default: your board)."],
+             ]]) { a in
+            var args: [String: String] = [:]
+            if let b = a["board"] as? String, !b.isEmpty { args["board"] = b }
+            return try self.call("tile.list", args: args)
+        },
+        Tool(name: "list_boards",
+             description: "List the user's Pitwall boards (each is usually one project folder or repo): id, name, root folder, whether it's the board you're on (\"yours\"), and how many agents it has. Use with open_portal to work with another repo.",
              schema: ["type": "object", "properties": [:]]) { _ in
-            try self.call("tile.list")
+            try self.call("board.list")
+        },
+        Tool(name: "open_portal",
+             description: "Open a portal to another board: start a new agent there (in a fresh git worktree of that board's repo) on a task, or connect to an agent already on that board (tile_id from list_tiles with board; a task, if given, is sent to it as a message). Then talk to it with send_message; it appears in list_links with relation \"portal\". Use this when the work needs changes in another repo. The user's view doesn't change.",
+             schema: ["type": "object", "properties": [
+                "board": ["type": "string", "description": "Board id or name (see list_boards)."],
+                "task": ["type": "string", "description": "What the agent on the other side should do. Required to start a new agent."],
+                "tile_id": ["type": "string", "description": "Connect to this existing agent on that board instead of starting one."],
+                "worktree": ["type": "boolean", "description": "Start the new agent in its own git worktree (default true)."],
+             ], "required": ["board"]]) { a in
+            var args: [String: String] = ["board": a["board"] as? String ?? ""]
+            if let t = a["task"] as? String { args["task"] = t }
+            if let t = a["tile_id"] as? String { args["to"] = t }
+            if let w = a["worktree"] as? Bool, !w { args["worktree"] = "0" }
+            return try self.call("portal.open", args: args)
+        },
+        Tool(name: "close_portal",
+             description: "Close a portal you no longer need. The other agent keeps running.",
+             schema: ["type": "object", "properties": [
+                "tile_id": ["type": "string", "description": "The agent on the other side."],
+             ], "required": ["tile_id"]]) { a in
+            try self.call("portal.close", args: ["to": a["tile_id"] as? String ?? ""])
         },
         Tool(name: "open_terminal",
              description: "Open a new terminal tile next to this one. Optionally run a command in it (for example a dev server, a test watcher, or another agent).",
@@ -68,6 +98,7 @@ final class MCPServer {
              ]]) { a in
             var args: [String: String] = ["cwd": a["cwd"] as? String ?? FileManager.default.currentDirectoryPath]
             if let r = a["pr"] as? String { args["ref"] = r }
+            args["explain"] = "1"
             return try self.call("tile.pr", args: args)
         },
         Tool(name: "open",
@@ -96,14 +127,14 @@ final class MCPServer {
                                                  "message": a["message"] as? String ?? ""])
         },
         Tool(name: "list_links",
-             description: "List the tiles this agent is connected to on the canvas (its parent, the agents it spawned, and tiles the user linked by hand). Linked agents can message each other.",
+             description: "List the tiles this agent is connected to on the canvas (its parent, the agents it spawned, and tiles the user linked by hand), and agents on other boards connected through a portal (relation \"portal\"). Linked agents can message each other.",
              schema: ["type": "object", "properties": [:]]) { _ in
             try self.call("link.list")
         },
         Tool(name: "send_message",
              description: "Send a message to a connected tile's agent. If it is idle it receives the message as a new prompt; if it is busy it receives it as soon as it finishes its current turn. Use list_links to find tile ids.",
              schema: ["type": "object", "properties": [
-                "tile_id": ["type": "string", "description": "A linked tile id."],
+                "tile_id": ["type": "string", "description": "A linked or portal-connected tile id. Returns delivered, or queued if it isn't running."],
                 "text": ["type": "string"],
              ], "required": ["tile_id", "text"]]) { a in
             try self.call("link.send", tile: a["tile_id"] as? String, args: ["text": a["text"] as? String ?? ""])
@@ -142,7 +173,7 @@ final class MCPServer {
                     "protocolVersion": (params["protocolVersion"] as? String) ?? "2025-06-18",
                     "capabilities": ["tools": [:]],
                     "serverInfo": ["name": "pitwall", "version": "0.1.0"],
-                    "instructions": "Pitwall is the infinite canvas this agent's terminal lives on. Use set_status to keep the user informed, open to show files or dev servers, open_terminal to start helpers, watch_command to run tests or builds you want the user to see, and follow_pr to track CI on your pull request. To wait on CI, a deploy or a rollout, call wait_for and end your turn: Pitwall wakes you with the result, so never block on gh run watch, sleep or polling loops.",
+                    "instructions": "Pitwall is the infinite canvas this agent's terminal lives on. Use set_status to keep the user informed, open to show files or dev servers, open_terminal to start helpers, watch_command to run tests or builds you want the user to see, and follow_pr to track CI on your pull request. To work with another repo, use list_boards and open_portal. To wait on CI, a deploy or a rollout, call wait_for and end your turn: Pitwall wakes you with the result, so never block on gh run watch, sleep or polling loops.",
                 ])
             case "ping":
                 respond(id, result: [:])
