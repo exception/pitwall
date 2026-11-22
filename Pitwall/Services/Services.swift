@@ -177,7 +177,7 @@ enum Sessions {
     }
 
     static func headlessRequest(for t: Tile, boardID: String, size: (cols: Int, rows: Int)) -> DaemonRequest {
-        DaemonRequest(op: .attach, id: t.sessionID ?? t.id, cwd: t.cwd, script: t.command.flatMap { $0.isEmpty ? nil : $0 },
+        DaemonRequest(op: .attach, id: t.sessionID ?? t.id, cwd: t.cwd, script: AgentKind.launchCommand(for: t).flatMap { $0.isEmpty ? nil : $0 },
                       env: headlessEnv(tileID: t.id, boardID: boardID), cols: size.cols, rows: size.rows)
     }
 
@@ -308,6 +308,21 @@ enum ClaudeIntegration {
         // `--mcp-config` takes several files, so end options before the task.
         if !prompt.isEmpty { cmd += " -- " + shellQuote(prompt) }
         return cmd
+    }
+
+    /// Shell command that reopens a conversation without sending a prompt.
+    /// Unknown conversation: Claude's picker (`--continue` could grab another
+    /// tile's, when they share a folder). No transcript (nothing was said, or
+    /// it was deleted): a new one, since `--resume` would exit with an error.
+    static func resumeCommand(launchedWith original: String?, session: String?, transcript: String?) -> String {
+        var cmd = command(task: nil)
+        // Our own command line: keep its options (image folders), drop the task.
+        if let original, original.hasPrefix("claude --settings "), let options = original.components(separatedBy: " -- ").first {
+            cmd = options
+        }
+        guard let session else { return cmd + " --resume" }
+        if let transcript, !FileManager.default.fileExists(atPath: transcript) { return cmd }
+        return cmd + " --resume " + shellQuote(session)
     }
 
     /// The task with attached image paths appended, so the agent reads them.
