@@ -130,6 +130,66 @@ final class PitwallTests: XCTestCase {
         XCTAssertTrue(codex.contains(" -- "), codex)
     }
 
+    func testRelaunchResumesInsteadOfReplayingThePrompt() throws {
+        let img = URL(fileURLWithPath: "/tmp/pw-att/shot.png")
+        let transcript = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jsonl")
+        try Data().write(to: transcript)
+        defer { try? FileManager.default.removeItem(at: transcript) }
+        var t = Tile(kind: .agent, frame: .zero)
+        let options = ClaudeIntegration.command(task: nil)
+
+        // Saved before conversations were tracked: pick one.
+        t.command = ClaudeIntegration.command(task: "deploy it -- now\nit's urgent")
+        XCTAssertEqual(AgentKind.relaunchCommand(for: t), options + " --resume")
+
+        t.claudeSession = "abc-123"
+        t.claudeTranscript = transcript.path
+        XCTAssertEqual(AgentKind.relaunchCommand(for: t), options + " --resume abc-123")
+
+        // Image folders stay readable; the prompt naming them goes.
+        t.command = ClaudeIntegration.command(task: "fix this", images: [img])
+        let withImage = try XCTUnwrap(AgentKind.relaunchCommand(for: t))
+        XCTAssertTrue(withImage.contains("--add-dir /tmp/pw-att"), withImage)
+        XCTAssertFalse(withImage.contains("fix this") || withImage.contains("shot.png"), withImage)
+
+        // A hand-written command that became an agent.
+        t.command = "cd web && claude 'fix this'"
+        XCTAssertEqual(AgentKind.relaunchCommand(for: t), options + " --resume abc-123")
+
+        t.claudeTranscript = transcript.path + ".gone"
+        XCTAssertEqual(AgentKind.relaunchCommand(for: t), options)
+    }
+
+    func testOnlyANewTileGetsItsPrompt() throws {
+        var t = Tile(kind: .agent, frame: .zero)
+        t.command = ClaudeIntegration.command(task: "fix this")
+        t.awaitingLaunch = true
+        // Deferred until its board opens, possibly after an app restart.
+        let saved = try Wire.decoder.decode(Tile.self, from: Wire.encoder.encode(t))
+        XCTAssertEqual(AgentKind.launchCommand(for: saved), t.command)
+        XCTAssertEqual(Sessions.headlessRequest(for: saved, boardID: "b", size: (80, 24)).script, t.command)
+
+        t.awaitingLaunch = nil
+        let resume = ClaudeIntegration.command(task: nil) + " --resume"
+        XCTAssertEqual(AgentKind.launchCommand(for: t), resume)
+        XCTAssertEqual(Sessions.headlessRequest(for: t, boardID: "b", size: (80, 24)).script, resume)
+    }
+
+    func testRelaunchOfOtherTiles() {
+        var t = Tile(kind: .agent, frame: .zero)
+        t.command = AgentKind.codex.command(task: "fix this")
+        XCTAssertEqual(AgentKind.relaunchCommand(for: t), "codex resume")
+        t.command = "aider --message 'fix this'"
+        XCTAssertNil(AgentKind.relaunchCommand(for: t))
+        t.command = nil
+        XCTAssertNil(AgentKind.relaunchCommand(for: t))
+        for kind in [TileKind.terminal, .logs] {
+            t.kind = kind
+            t.command = "npm run dev"
+            XCTAssertEqual(AgentKind.relaunchCommand(for: t), "npm run dev")
+        }
+    }
+
     func testWaitSpecs() {
         XCTAssertEqual(CanvasController.waitSpec(run: "43775328604", pr: nil, command: nil),
                        .init(command: "gh run watch 43775328604 --exit-status --interval 30", label: "CI run 43775328604",
@@ -476,6 +536,7 @@ final class PitwallTests: XCTestCase {
         t.cwd = "/tmp"
         t.command = "claude -- hi"
         t.sessionID = "s-1"
+        t.awaitingLaunch = true
         let r = Sessions.headlessRequest(for: t, boardID: "b-9", size: (100, 30))
         XCTAssertEqual(r.op, .attach)
         XCTAssertEqual(r.id, "s-1")

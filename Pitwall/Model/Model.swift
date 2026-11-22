@@ -104,6 +104,15 @@ struct Tile: Codable, Identifiable, Equatable {
     var rcSpawn: String?
     /// Remote session tiles: Claude Code's session id (target is the transcript).
     var rcSession: String?
+    /// Set on creation until the session has been seen running: only then may
+    /// the tile run its command as written, first prompt included. Persisted,
+    /// because a tile on another board may first start after an app restart.
+    /// nil (also boards saved by older versions) = has started before.
+    var awaitingLaunch: Bool?
+    /// Agent tiles: the Claude Code conversation to resume when the daemon
+    /// session is gone (reboot, daemon crash), and its transcript.
+    var claudeSession: String?
+    var claudeTranscript: String?
     /// Remote Control hosts the user started by typing `claude rc` in this
     /// terminal: it goes back to a plain terminal when they stop it.
     var rcAdopted: Bool?

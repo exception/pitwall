@@ -221,7 +221,10 @@ final class CanvasController: NSObject {
             let sessionID = t.sessionID ?? t.id
             var cmd = "\(shellQuote(Sessions.helperPath)) attach --id \(sessionID)"
             if let cwd = t.cwd { cmd += " --cwd \(shellQuote(cwd))" }
-            if let c = t.command, !c.isEmpty { cmd += " --sh \(shellQuote(c))" }
+            // The daemon runs this only if it has no such session. For an agent
+            // that already started, that must not replay its first prompt.
+            let script = AgentKind.launchCommand(for: t)
+            if let c = script, !c.isEmpty { cmd += " --sh \(shellQuote(c))" }
             let env = [
                 PitwallEnv.tileID: t.id,
                 PitwallEnv.boardID: board.id,
@@ -316,6 +319,7 @@ final class CanvasController: NSObject {
     @discardableResult
     func addTile(_ t: Tile, at: CGPoint? = nil, focus: Bool = true, fly: Bool = true) -> String {
         var t = t
+        if t.isTerminalBacked { t.awaitingLaunch = true }
         let size = t.frame.size == .zero ? Self.defaultSize(t.kind) : t.frame.size
         let b = targetBoard
         if b.id != board.id || quietCreation {
@@ -332,7 +336,9 @@ final class CanvasController: NSObject {
                 reconcile()
             } else if t.isTerminalBacked {
                 // Nothing will show it, so start its session now.
-                if !Sessions.startHeadless(t, boardID: b.id) {
+                if Sessions.startHeadless(t, boardID: b.id) {
+                    markLaunched(t)
+                } else {
                     store.updateTile(t.id) { $0.statusMessage = "Starts when you open \(b.name)" }
                 }
             }
@@ -1107,7 +1113,9 @@ final class CanvasController: NSObject {
 
     /// Claude Code hook events → status. Returns optional hook output JSON.
     func handleHook(tileID: String, args: [String: String]) -> String? {
-        guard store.findTile(tileID) != nil else { return nil }
+        guard let tile = store.findTile(tileID)?.tile else { return nil }
+        markLaunched(tile)
+        rememberConversation(tile, args: args)
         hookedTiles.insert(tileID)
         screenWaiting.remove(tileID)
         backgroundEndedAt[tileID] = nil
@@ -1227,6 +1235,20 @@ final class CanvasController: NSObject {
             break
         }
         return nil
+    }
+
+    private func markLaunched(_ t: Tile) {
+        if t.awaitingLaunch != nil { store.updateTile(t.id) { $0.awaitingLaunch = nil } }
+    }
+
+    /// Follows the tile's conversation through /clear and /resume.
+    private func rememberConversation(_ t: Tile, args: [String: String]) {
+        // SessionEnd names the conversation being left, not the current one.
+        guard t.kind != .remote, t.rcSpawn == nil, args["event"] != "SessionEnd",
+              let id = args["session_id"], !id.isEmpty else { return }
+        let path = args["transcript_path"]
+        guard t.claudeSession != id || t.claudeTranscript != path else { return }
+        store.updateTile(t.id) { $0.claudeSession = id; $0.claudeTranscript = path }
     }
 
     static func hookJSON(_ obj: [String: Any]) -> String? {
@@ -1640,6 +1662,7 @@ final class CanvasController: NSObject {
         for b in store.boards {
             for t in b.tiles where t.isTerminalBacked {
                 guard let sid = t.sessionID, let info = byID[sid] else { continue }
+                markLaunched(t)
                 let fg = info.foregroundName ?? ""
                 let isAgent = Self.isAgentProcess(fg)
                 pollRemoteHost(t, info: info, isAgent: isAgent)
@@ -1866,6 +1889,24 @@ enum AgentKind: String, CaseIterable, Identifiable {
             return cmd
         case .shell: return task.isEmpty ? nil : task
         }
+    }
+
+    /// What the daemon runs if it has no session for this tile. Every way of
+    /// starting a session (on screen or headless) must go through this.
+    static func launchCommand(for t: Tile) -> String? {
+        t.awaitingLaunch == true ? t.command : relaunchCommand(for: t)
+    }
+
+    /// What to run when a tile that already started needs a new session.
+    /// Agents pick their conversation back up and never get the first prompt
+    /// again; anything else that isn't resumable comes back as a shell.
+    static func relaunchCommand(for t: Tile) -> String? {
+        guard t.kind == .agent else { return t.command }
+        let program = t.command?.split(separator: " ").first
+        if t.claudeSession != nil || program == "claude" {
+            return ClaudeIntegration.resumeCommand(launchedWith: t.command, session: t.claudeSession, transcript: t.claudeTranscript)
+        }
+        return program == "codex" ? "codex resume" : nil
     }
 }
 
